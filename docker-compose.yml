@@ -79,7 +79,7 @@ services:
     # Set ARMORYHUB_VERSION in your env file to pin a version, e.g. 0.1.1.
     # `latest` works, but then you cannot tell which version you are running or
     # go back to a previous one.
-    image: ghcr.io/marcjwrigg/armoryhub-selfhost:${ARMORYHUB_VERSION:-0.1.4}
+    image: ghcr.io/marcjwrigg/armoryhub-selfhost:${ARMORYHUB_VERSION:-0.1.5}
     restart: unless-stopped
     depends_on:
       db:
@@ -182,7 +182,7 @@ services:
   # else periodically — a backup on the same disk as the original does not survive
   # that disk failing. The contents are already encrypted, so cloud storage is fine.
   backup:
-    image: ghcr.io/marcjwrigg/armoryhub-selfhost:${ARMORYHUB_VERSION:-0.1.4}
+    image: ghcr.io/marcjwrigg/armoryhub-selfhost:${ARMORYHUB_VERSION:-0.1.5}
     restart: unless-stopped
     depends_on:
       db:
@@ -216,7 +216,7 @@ services:
   #   docker compose start app
   restore:
     profiles: ["tools"]
-    image: ghcr.io/marcjwrigg/armoryhub-selfhost:${ARMORYHUB_VERSION:-0.1.4}
+    image: ghcr.io/marcjwrigg/armoryhub-selfhost:${ARMORYHUB_VERSION:-0.1.5}
     depends_on:
       db:
         condition: service_healthy
