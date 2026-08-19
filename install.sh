@@ -109,14 +109,23 @@ ok 'generated .env with unique secrets (mode 600)'
 #
 # chown via a throwaway root container: the Docker daemon is already root, so this
 # needs no host sudo and works whatever uid the operator happens to be.
-mkdir -p data/postgres data/app data/backups data/tailscale
+# files/ and branding/ exist in the image but a bind mount over /data masks them,
+# so create them here rather than relying on the app to do it lazily.
+mkdir -p data/postgres data/app/files data/app/branding data/backups data/tailscale
+
+# Group is the OPERATOR's gid, mode 750 — so uid 1001 owns it and you can still
+# read your own data. The first attempt used 1001:1001 with mode 700, which meant
+# `ls data/backups` returned "Permission denied" to the very person who owns the
+# machine. Being able to see and copy your own backups is half the reason for using
+# bind mounts at all.
+HOST_GID="$(id -g)"
 if ! docker run --rm -v "$DIR/data:/d" alpine:latest \
-      sh -c 'chown -R 1001:1001 /d/app /d/backups' >/dev/null 2>&1; then
+      sh -c "chown -R 1001:${HOST_GID} /d/app /d/backups && chmod -R 750 /d/app /d/backups" >/dev/null 2>&1; then
   warn 'Could not set ownership on ./data/app and ./data/backups.'
   warn 'If the app or backups fail with permission errors, run:'
-  warn "  docker run --rm -v $DIR/data:/d alpine chown -R 1001:1001 /d/app /d/backups"
+  warn "  docker run --rm -v $DIR/data:/d alpine sh -c 'chown -R 1001:${HOST_GID} /d/app /d/backups && chmod -R 750 /d/app /d/backups'"
 fi
-ok 'created ./data (postgres, app, backups, tailscale)'
+ok 'created ./data (postgres, app, backups, tailscale) — readable by you'
 
 # --- start -------------------------------------------------------------------
 say ''

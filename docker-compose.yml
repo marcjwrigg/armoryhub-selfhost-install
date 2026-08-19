@@ -83,7 +83,7 @@ services:
     #
     # Pin ARMORYHUB_VERSION in .env for reproducible upgrades. `latest` is
     # convenient but means you cannot tell which version you are running.
-    image: ghcr.io/marcjwrigg/armoryhub-selfhost:${ARMORYHUB_VERSION:-0.1.0}
+    image: ghcr.io/marcjwrigg/armoryhub-selfhost:${ARMORYHUB_VERSION:-0.1.1}
     restart: unless-stopped
     depends_on:
       db:
@@ -192,7 +192,7 @@ services:
     # Our own image, not stock postgres: it already carries pg_dump/pg_restore
     # (installed for the pre-upgrade dump) and backup.sh is baked in. That removes
     # a bind mount, and guarantees the dump client matches the app's expectations.
-    image: ghcr.io/marcjwrigg/armoryhub-selfhost:${ARMORYHUB_VERSION:-0.1.0}
+    image: ghcr.io/marcjwrigg/armoryhub-selfhost:${ARMORYHUB_VERSION:-0.1.1}
     restart: unless-stopped
     depends_on:
       db:
@@ -227,7 +227,7 @@ services:
   # replaced underneath it.
   restore:
     profiles: ["tools"]
-    image: ghcr.io/marcjwrigg/armoryhub-selfhost:${ARMORYHUB_VERSION:-0.1.0}
+    image: ghcr.io/marcjwrigg/armoryhub-selfhost:${ARMORYHUB_VERSION:-0.1.1}
     depends_on:
       db:
         condition: service_healthy
