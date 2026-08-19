@@ -110,6 +110,37 @@ No dashboard can fill this in for you, for two reasons: the app binds to
 for the dashboard to detect; and the Tailscale hostname does not exist yet at the
 moment the compose file is first parsed.
 
+## Installing it as an app on your phone and computer
+
+ArmoryHub installs to your home screen or dock and then behaves like any other app —
+its own icon, its own window, no browser chrome. There is nothing to download from an
+app store.
+
+**First, on each device you want to use it from:** install Tailscale from your app
+store, sign in to the same account, and make sure it is connected. Your instance
+lives on your private network, so the address only resolves while Tailscale is on. If
+the page will not load, that is almost always the reason.
+
+Then open `https://armoryhub.<your-tailnet>.ts.net` and:
+
+**iPhone or iPad** — use **Safari**. Tap the Share button (the square with an arrow
+pointing up), scroll down, tap **Add to Home Screen**, then **Add**. Other browsers
+on iOS can make a shortcut, but only Safari installs it as a real app.
+
+**Android** — use **Chrome**. Tap the three-dot menu, then **Install app** (some
+versions say *Add to Home screen*), then confirm.
+
+**Windows or Linux desktop** — in **Chrome** or **Edge**, click the install icon at
+the right-hand end of the address bar, then **Install**. If you do not see it, the
+three-dot menu has the same option.
+
+**Mac** — in **Safari**, choose **File → Add to Dock**. In Chrome or Edge, use the
+install icon in the address bar as above.
+
+Launch it from your home screen or dock afterwards. It keeps you signed in, so you
+only need your PIN. Remember that Tailscale has to be connected for it to load —
+worth knowing before you rely on it at a range with no signal.
+
 ## Running under CasaOS, Portainer or Dockge
 
 The compose file is self-contained, so it works in any of them.
