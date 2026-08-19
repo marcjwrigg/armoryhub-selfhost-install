@@ -3,6 +3,42 @@
 Configuration only — the application itself is a container image. No account, no
 credentials, and no build step required to install.
 
+## What you need
+
+**A machine that stays on, running Linux.** A NAS, a mini PC, or an old laptop is
+plenty. Both 64-bit Intel/AMD (`amd64`) and 64-bit ARM (`arm64`) are supported, so
+a Raspberry Pi 4 or 5 works.
+
+| | Minimum | Comfortable |
+|---|---|---|
+| Memory | 1 GB free | 2 GB free |
+| Disk | 3 GB, plus room for your photos | 10 GB+ |
+| CPU | any 64-bit dual core | — |
+
+The install itself downloads roughly 150 MB. Photos are the only thing that grows
+much over time — budget for the size of your existing photo library, plus room for
+backups, which keep 7 daily and 4 weekly copies.
+
+**Docker, with the Compose plugin.** If this prints a version, you are ready:
+
+```bash
+docker compose version
+```
+
+Compose **v2.23 or newer** is required. Older versions cannot read the setup scripts
+embedded in `docker-compose.yml` and fail with a confusing error about `configs`.
+If you need to install Docker, follow
+<https://docs.docker.com/engine/install/> and then
+<https://docs.docker.com/engine/install/linux-postinstall/> so you can use Docker
+without `sudo`.
+
+**A free Tailscale account**, at <https://tailscale.com>. This is how you get HTTPS,
+which is not optional — see below.
+
+**You do not need** a domain name, a static IP, port forwarding, any firewall
+changes, or root access beyond installing Docker itself. Nothing is exposed to the
+internet.
+
 ## Install (one command)
 
 ```bash
@@ -55,15 +91,32 @@ If you own a domain and want a public URL instead, see the Caddy section in
 `env.example`. That needs a DNS record and ports 80 and 443 reachable from the
 internet.
 
+### Last step: point your dashboard at the HTTPS address
+
+**If you installed through CasaOS, Portainer, Dockge or anything else with an "open
+app" button, you must update that address by hand once Tailscale is approved.** Set
+the app's **Web UI** / URL setting to your full Tailscale address:
+
+```
+https://armoryhub.<your-tailnet>.ts.net
+```
+
+Until you do, the button opens `http://<server-ip>:8477` — the one address the app
+cannot work on. You will be able to sign in and then fail to set or enter your PIN,
+because browsers withhold Web Crypto from insecure origins.
+
+No dashboard can fill this in for you, for two reasons: the app binds to
+`127.0.0.1` deliberately, so it is not reachable over your LAN and there is nothing
+for the dashboard to detect; and the Tailscale hostname does not exist yet at the
+moment the compose file is first parsed.
+
 ## Running under CasaOS, Portainer or Dockge
 
-The compose file is self-contained, so it works in any of them. Two things to know
-if you use CasaOS:
+The compose file is self-contained, so it works in any of them.
 
-- **Set the Web UI address yourself.** The app binds to `localhost` deliberately, so
-  it is not reachable over your LAN and CasaOS cannot guess the address. After you
-  approve the Tailscale machine, put `https://armoryhub.<your-tailnet>.ts.net` in the
-  app's settings.
+- **Set the Web UI address yourself**, as described above. This is the one manual
+  step, and skipping it is the most common way to end up with a broken-looking
+  install.
 - **Do not edit anything else from the CasaOS settings form.** It cannot represent
   everything in this compose file, and saving can rewrite the configuration
   incorrectly. Use the terminal for changes.
@@ -86,14 +139,24 @@ upgrade aborts if that backup fails.
 ## Uninstalling
 
 ```bash
-# deregister the Tailscale node FIRST, or a future reinstall becomes armoryhub-1
+# Sign out of Tailscale FIRST, or a future reinstall appears as armoryhub-1
 docker compose exec tailscale tailscale logout
 
-docker compose --profile tailscale --profile tools down -v
+docker compose --profile tailscale --profile tools down
 ```
 
-`-v` deletes your database, files **and backups**. Copy anything you want to keep
-off the machine first.
+That stops and removes the containers. **Your data is still there**, in the `data`
+directory next to `docker-compose.yml`, and `docker compose up -d` brings it all
+back.
+
+To delete your data as well, remove that directory yourself:
+
+```bash
+rm -rf ./data
+```
+
+There is no undo, and that includes your backups. Copy anything you want to keep off
+the machine first.
 
 ## Backups
 
@@ -113,9 +176,10 @@ docker compose --profile tools run --rm restore restore <stamp>
 docker compose start app
 ```
 
-**Test a restore before you rely on one.** Backups live in a Docker volume on this
-machine, so they do not survive the disk failing — copy them elsewhere
-periodically. Their contents are already encrypted, so a cloud bucket is low-risk.
+**Test a restore before you rely on one.** Backups are written to `./data/backups`
+as ordinary files, so copy them off this machine periodically — a backup on the same
+disk does not survive that disk failing. Their contents are already encrypted, so
+cloud storage is low-risk.
 
 ## Two different secrets
 
@@ -137,4 +201,4 @@ recovery passphrase as soon as you sign in and keep it somewhere safe and offlin
 
 ---
 
-Version: `0.1.2`
+Version: `0.1.3`
