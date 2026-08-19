@@ -1,29 +1,26 @@
 # Install self-hosted ArmoryHub
 
-Configuration only. The application itself is a private container image — you will
-need the registry credentials supplied with your licence.
+Configuration only — the application itself is a container image. No account, no
+credentials, and no build step required to install.
 
-## Install
+## Install (one command)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/marcjwrigg/armoryhub-selfhost-install/main/install.sh | sh
+```
+
+It checks Docker, generates every secret for you, pulls the image and starts up.
+Nothing to edit. Read it first if you would rather not pipe a script to a shell —
+it is short and does exactly what it says.
+
+### Or manually
 
 ```bash
 mkdir armoryhub && cd armoryhub
-
 curl -fsSL https://raw.githubusercontent.com/marcjwrigg/armoryhub-selfhost-install/main/docker-compose.yml -o docker-compose.yml
 curl -fsSL https://raw.githubusercontent.com/marcjwrigg/armoryhub-selfhost-install/main/env.example -o .env
 chmod 600 .env
-```
-
-Edit `.env` and replace every `CHANGE_ME`. Generate each value with:
-
-```bash
-openssl rand -base64 32          # passwords
-openssl rand -base64 48          # AUTH_JWT_SECRET
-```
-
-Then sign in to the registry and start it:
-
-```bash
-docker login ghcr.io             # credentials from your licence
+# replace every CHANGE_ME — openssl rand -base64 32 (and 48 for AUTH_JWT_SECRET)
 docker compose up -d
 ```
 
