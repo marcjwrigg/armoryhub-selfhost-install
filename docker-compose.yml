@@ -1,0 +1,479 @@
+# ArmoryHub self-hosted stack.
+#
+#   cp .env.selfhost.example .env.selfhost   # then fill in the secrets
+#   docker compose -f docker-compose.selfhost.yml --env-file .env.selfhost up -d
+#
+# ---------------------------------------------------------------------------
+# HTTPS: two options. Tailscale is PREFERRED.
+# ---------------------------------------------------------------------------
+#
+# RECOMMENDED — the Tailscale sidecar. ArmoryHub gets its OWN tailnet hostname:
+#
+#     # put TS_AUTHKEY in .env.selfhost first, then:
+#     docker compose -f docker-compose.selfhost.yml --env-file .env.selfhost \
+#       --profile tailscale up -d
+#
+# You get https://armoryhub.<your-tailnet>.ts.net with a real auto-renewing
+# Let's Encrypt certificate, no port forwarding, no DNS record, no firewall
+# changes. It proxies over the internal compose network, so the published loopback
+# port is no longer needed to reach the app — only for local tooling. Your machine
+# keeps its own tailnet name for whatever else it runs.
+#
+# ALTERNATIVE — `tailscale serve` on the host, if Tailscale is already installed
+# there and you do not mind the app taking over the machine's own hostname:
+#
+#     tailscale serve --bg http://localhost:${APP_PORT}
+#
+# That claims the whole HTTPS root of the MACHINE's tailnet name, so anything else
+# on the box is no longer reachable under it. Substitute the port you configured
+# (default 8477), and re-run it if you ever change APP_PORT.
+#
+# You get a real, auto-renewing Let's Encrypt certificate on your
+# <machine>.<tailnet>.ts.net name with NO port forwarding, NO DNS record and NO
+# firewall changes. Reachable from your own devices anywhere; reachable by nobody
+# else. Valid HTTPS is also what makes PWA install and Web Crypto work at all.
+#
+# ALTERNATIVE — Caddy, if you want a PUBLIC URL on your own domain:
+#
+#     docker compose -f docker-compose.selfhost.yml --profile caddy up -d
+#
+# Profile-gated, so it never starts unless you ask for it. Needs a DNS A record
+# and ports 80 + 443 reachable from the internet. Two things to know: many
+# residential ISPs block port 80, which breaks the ACME HTTP-01 challenge and
+# looks like a Caddy fault; and this exposes your instance to the public internet,
+# which is the opposite of what Tailscale gives you. Edit
+# docker/selfhost/caddy/Caddyfile for anything beyond the hostname.
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: armoryhub
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?set APP_DB_PASSWORD}
+      MIGRATOR_DB_PASSWORD: ${MIGRATOR_DB_PASSWORD:?set MIGRATOR_DB_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Runs once, on an empty data directory: creates the migrator/app roles,
+      # uuid-ossp, and the supabase_realtime publication stub.
+    configs:
+      - source: initdb_roles
+        target: /docker-entrypoint-initdb.d/01_roles.sh
+        mode: 0755
+    # DELIBERATELY NO `ports:` (plan §10). The app reaches Postgres over the
+    # internal compose network. Publishing 5432 to the host — or worse, to the
+    # internet — is the single most damaging thing a self-hoster can do here.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d armoryhub"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  app:
+    # Pulled, never built.
+    #
+    # A customer has the compose file and a handful of scripts — no Dockerfile and
+    # no source. If `build:` appeared here and the image were ever missing locally,
+    # `up` would try to build and fail with an error about a missing Dockerfile
+    # that says nothing about the real problem. Development adds the build
+    # instructions via an overlay: see docker-compose.build.yml.
+    #
+    # Pin ARMORYHUB_VERSION in .env for reproducible upgrades. `latest` is
+    # convenient but means you cannot tell which version you are running.
+    image: ghcr.io/marcjwrigg/armoryhub-selfhost:${ARMORYHUB_VERSION:-0.1.0}
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DEPLOYMENT_MODE: selfhosted
+      ANALYTICS_ENABLED: "false"
+
+      # Two connections, deliberately (see docker/selfhost/initdb/01_roles.sh):
+      #   admin  = migrator, owns the schema, runs the chain
+      #   app    = runtime, NON-OWNER so RLS actually binds it
+      DATABASE_ADMIN_URL: postgres://armoryhub_migrator:${MIGRATOR_DB_PASSWORD}@db:5432/armoryhub
+      DATABASE_URL: postgres://armoryhub_app:${APP_DB_PASSWORD}@db:5432/armoryhub
+
+      APP_URL: ${APP_URL:-http://localhost:3000}
+
+      # Signs the session cookie. The entrypoint refuses to boot without it —
+      # a missing or weak value would mean anyone could mint a session for any
+      # user id.
+      AUTH_JWT_SECRET: ${AUTH_JWT_SECRET:?set AUTH_JWT_SECRET (openssl rand -base64 48)}
+
+      # Allows a non-Secure session cookie so plain http://localhost works for
+      # local testing. Must stay unset in real use, where Caddy or
+      # `tailscale serve` terminates TLS.
+      ALLOW_INSECURE_COOKIES: ${ALLOW_INSECURE_COOKIES:-false}
+
+      STORAGE_DRIVER: fs
+      STORAGE_PATH: /data/files
+      REALTIME_MODE: poll
+      REALTIME_POLL_MS: "30000"
+      LICENSE_FILE: /data/license.jwt
+      ENCRYPTION_AUTO_UNLOCK: "false"
+      BACKUP_DIR: /data/backups
+    volumes:
+      - appdata:/data
+    ports:
+      # Bound to LOOPBACK by default, not 0.0.0.0.
+      #
+      # `tailscale serve` connects over localhost, so this is all it needs — and
+      # it means the app is NOT reachable over the home LAN in plain HTTP by
+      # anyone who joins the wifi. Publishing on 0.0.0.0 was the default and it
+      # silently exposed an unencrypted login form to the whole subnet.
+      #
+      # Set APP_BIND=0.0.0.0 only if you deliberately want LAN access, and
+      # understand that it is unencrypted unless you put a TLS proxy in front.
+      #
+      # HOST PORT defaults to 8477, not 3000. A self-hosted box usually runs other
+      # things, and 3000 is one of the most contested ports there is — Grafana,
+      # most dev servers, and a lot of homelab tooling all default to it. 8477 is
+      # arbitrary; it is just unlikely to collide. Change it with APP_PORT.
+      #
+      # The CONTAINER port stays 3000. It is on an isolated compose network, so it
+      # can never collide with anything on the host.
+      - "${APP_BIND:-127.0.0.1}:${APP_PORT:-8477}:3000"
+
+  # Tailscale sidecar — gives ArmoryHub its OWN tailnet hostname.
+  #
+  #   docker compose -f docker-compose.selfhost.yml --profile tailscale up -d
+  #
+  # WHY a sidecar rather than `tailscale serve` on the host:
+  #
+  #   - `tailscale serve` on the host claims the whole HTTPS root of the MACHINE's
+  #     tailnet name, so one app takes over the identity of a box that is usually
+  #     running other things. Here ArmoryHub gets armoryhub.<tailnet>.ts.net and the
+  #     machine keeps its own name for CasaOS and everything else.
+  #   - It proxies to `app:3000` over the internal compose network, so the app needs
+  #     NO published host port at all and cannot collide with anything on the host.
+  #   - The customer does not need Tailscale installed on the host.
+  #
+  # Userspace networking, so this needs neither NET_ADMIN nor /dev/net/tun. Serve
+  # works fine in that mode because tailscaled terminates the connections itself.
+  #
+  # Profile-gated because it requires an auth key. Generate a REUSABLE key at
+  # https://login.tailscale.com/admin/settings/keys and put it in .env.selfhost.
+  # The state volume is what stops the node re-registering (and burning a key) on
+  # every restart — do not delete it casually.
+  tailscale:
+    profiles: ["tailscale"]
+    image: tailscale/tailscale:stable
+    restart: unless-stopped
+    depends_on:
+      - app
+    environment:
+      # NOT the `:?required` form. Compose interpolates the ENTIRE file regardless
+      # of which profiles are active, so a required variable here breaks a plain
+      # `up` for everyone who never enables this sidecar. tailscaled logs a clear
+      # "no authkey" error if it is empty, which is the right place for it.
+      TS_AUTHKEY: ${TS_AUTHKEY:-}
+      TS_HOSTNAME: ${TS_HOSTNAME:-armoryhub}
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_SERVE_CONFIG: /config/serve.json
+      TS_USERSPACE: "true"
+    volumes:
+      - tailscale_state:/var/lib/tailscale
+    configs:
+      - source: tailscale_serve
+        target: /config/serve.json
+
+  # Nightly pg_dump + tar of the files volume (plan §9).
+  #
+  # A sidecar rather than a host cron job, so backups are part of the stack the
+  # customer starts and cannot be forgotten during setup. Uses the postgres image
+  # because it already carries a version-matched pg_dump/pg_restore — mismatched
+  # client versions are a classic way to produce dumps that will not restore.
+  backup:
+    # Our own image, not stock postgres: it already carries pg_dump/pg_restore
+    # (installed for the pre-upgrade dump) and backup.sh is baked in. That removes
+    # a bind mount, and guarantees the dump client matches the app's expectations.
+    image: ghcr.io/marcjwrigg/armoryhub-selfhost:${ARMORYHUB_VERSION:-0.1.0}
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_ADMIN_URL: postgres://armoryhub_migrator:${MIGRATOR_DB_PASSWORD}@db:5432/armoryhub
+      BACKUP_DIR: /backups
+      FILES_DIR: /data/files
+      BACKUP_HOUR: ${BACKUP_HOUR:-3}
+      BACKUP_KEEP_DAILY: ${BACKUP_KEEP_DAILY:-7}
+      BACKUP_KEEP_WEEKLY: ${BACKUP_KEEP_WEEKLY:-4}
+    volumes:
+      # Read-only: a backup process has no business writing to live data.
+      - appdata:/data:ro
+      - backups:/backups
+    entrypoint: ["/bin/sh", "/app/backup.sh", "loop"]
+
+  # One-off admin tasks: restore, verify, manual backup, list.
+  #
+  # Separate from the `backup` sidecar specifically so that the sidecar can keep
+  # /data READ-ONLY. A nightly backup process has no business being able to write
+  # to live data; a restore obviously must. Splitting them means the dangerous
+  # capability only exists in a container you start deliberately.
+  #
+  # Never starts with `up` — it is behind a profile:
+  #   docker compose --profile tools run --rm restore list
+  #   docker compose --profile tools run --rm restore verify  <stamp>
+  #   docker compose --profile tools run --rm restore restore <stamp>
+  #   docker compose --profile tools run --rm restore once
+  #
+  # Stop the app first for a restore, or it will write to a database being
+  # replaced underneath it.
+  restore:
+    profiles: ["tools"]
+    image: ghcr.io/marcjwrigg/armoryhub-selfhost:${ARMORYHUB_VERSION:-0.1.0}
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_ADMIN_URL: postgres://armoryhub_migrator:${MIGRATOR_DB_PASSWORD}@db:5432/armoryhub
+      BACKUP_DIR: /backups
+      FILES_DIR: /data/files
+    volumes:
+      - appdata:/data
+      - backups:/backups
+    entrypoint: ["/bin/sh", "/app/backup.sh"]
+
+  # Caddy — automatic HTTPS for customers who own a domain.
+  #
+  # Behind a profile, so the default stack stays Tailscale-only:
+  #   docker compose --profile caddy up -d
+  #
+  # NOT started by default on purpose. Tailscale is the recommended path (no
+  # router, DNS or firewall changes), and binding 443 unconditionally would
+  # collide with `tailscale serve`, which already holds 443 on the tailnet
+  # interface. Running both means choosing ports deliberately.
+  caddy:
+    profiles: ["caddy"]
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - app
+    environment:
+      CADDY_SITE_ADDRESS: ${CADDY_SITE_ADDRESS:-armoryhub.localhost}
+      CADDY_ACME_EMAIL: ${CADDY_ACME_EMAIL:-admin@localhost}
+    volumes:
+      # Certificates and ACME account keys. Losing this volume means re-issuing,
+      # which counts against Let's Encrypt rate limits.
+      - caddy_data:/data
+      - caddy_config:/config
+    # SYMMETRIC port mapping, deliberately.
+    #
+    # Caddy binds whatever port appears in CADDY_SITE_ADDRESS *inside* the
+    # container. With `host:8443` it listens on container 8443 — so mapping
+    # host 8443 -> container 443 silently connects to nothing (verified: curl
+    # returned 000 while Caddy logged a healthy cert issuance, which looks like a
+    # TLS fault rather than a port mismatch).
+    #
+    # Mapping the same number on both sides works for the standard 443 case and
+    # for any custom port, provided CADDY_SITE_ADDRESS includes that port.
+    ports:
+      - "${CADDY_HTTP_PORT:-80}:${CADDY_HTTP_PORT:-80}"
+      - "${CADDY_HTTPS_PORT:-443}:${CADDY_HTTPS_PORT:-443}"
+      - "${CADDY_HTTPS_PORT:-443}:${CADDY_HTTPS_PORT:-443}/udp"
+
+# ---------------------------------------------------------------------------
+# Inline configs — this is what makes the file self-contained.
+#
+# Everything the containers need is embedded here rather than bind-mounted from
+# adjacent files, so this ONE file is a complete deployment. Paste it into CasaOS,
+# Portainer, Dockge or similar, or `docker compose up -d` from an empty directory.
+#
+# ⚠️ EVERY `$` BELOW IS DOUBLED ON PURPOSE.
+#
+# Compose performs variable interpolation on config `content:`, so a literal
+# `$POSTGRES_USER` intended for the postgres entrypoint gets replaced with an empty
+# string before the container ever sees it. That produced
+# `psql --username "" --dbname ""`, so the roles were never granted and the app
+# failed later with "permission denied for database armoryhub" — a failure three
+# steps removed from its cause.
+#
+# `$$` yields a literal `$`. This applies to $$POSTGRES_USER and $$POSTGRES_DB
+# (postgres entrypoint), $${TS_CERT_DOMAIN} (tailscale) and Caddy's
+# {$$CADDY_SITE_ADDRESS} syntax. If you edit these blocks, keep the doubling.
+# ---------------------------------------------------------------------------
+configs:
+  initdb_roles:
+    content: |
+      #!/bin/bash
+      # Runs ONCE, as the Postgres superuser, on first initialisation of an empty
+      # data directory (Postgres image convention: /docker-entrypoint-initdb.d).
+      #
+      # Creates the two-role split that makes RLS real rather than decorative
+      # (validated by the spike, see selfhost-exploration/04-spike-results.md §7,
+      # assertion 0):
+      #
+      #   armoryhub_migrator  owns the schema, runs migrations
+      #   armoryhub_app       the runtime role — NON-OWNER, so RLS binds it
+      #
+      # If the app ever connects as the owner, every policy silently stops enforcing.
+      set -euo pipefail
+
+      : "$${APP_DB_PASSWORD:?APP_DB_PASSWORD must be set}"
+      : "$${MIGRATOR_DB_PASSWORD:?MIGRATOR_DB_PASSWORD must be set}"
+
+      psql -v ON_ERROR_STOP=1 --username "$$POSTGRES_USER" --dbname "$$POSTGRES_DB" <<-EOSQL
+          CREATE ROLE armoryhub_migrator LOGIN PASSWORD '$${MIGRATOR_DB_PASSWORD}';
+          CREATE ROLE armoryhub_app      LOGIN PASSWORD '$${APP_DB_PASSWORD}';
+
+          GRANT USAGE, CREATE ON SCHEMA public TO armoryhub_migrator;
+          GRANT USAGE         ON SCHEMA public TO armoryhub_app;
+
+          -- Required for CREATE SCHEMA auth / storage in the bootstrap step.
+          -- The app role deliberately never gets this.
+          GRANT CREATE ON DATABASE "$${POSTGRES_DB}" TO armoryhub_migrator;
+
+          -- BYPASSRLS on the MIGRATOR only, and specifically so pg_dump works.
+          --
+          -- The bootstrap applies FORCE ROW LEVEL SECURITY, which makes policies bind
+          -- the table owner too. pg_dump sets row_security = off, and a role that
+          -- cannot bypass RLS is then refused outright:
+          --
+          --   pg_dump: error: query failed: ERROR: query would be affected by
+          --   row-level security policy for table "accessories"
+          --
+          -- Postgres is right to refuse — silently dumping only the visible rows would
+          -- produce a backup missing data, which is the worst possible failure for a
+          -- backup. So the dumping role needs genuine bypass ability.
+          --
+          -- This is a small privilege change: the migrator already OWNS every table, so
+          -- it could drop the policies anyway. The runtime role (armoryhub_app) still
+          -- has neither BYPASSRLS nor ownership, and the app entrypoint refuses to boot
+          -- if it ever does — which is the protection that actually matters.
+          ALTER ROLE armoryhub_migrator BYPASSRLS;
+
+          -- uuid-ossp is superuser-only to install. Migration 00001 re-declares it
+          -- with IF NOT EXISTS, so it becomes a no-op there.
+          CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+          -- Empty publication so 00004_realtime_subscriptions.sql replays UNCHANGED
+          -- (13 x ALTER PUBLICATION ... ADD TABLE). Nothing ever subscribes to it —
+          -- the self-hosted RealtimePort polls updated_at instead. This is why no
+          -- migration skip-list is needed. The "wal_level is insufficient" WARNING
+          -- here is expected and harmless; do not enable logical replication to
+          -- silence it, that costs WAL volume for no benefit.
+          CREATE PUBLICATION supabase_realtime;
+          ALTER PUBLICATION supabase_realtime OWNER TO armoryhub_migrator;
+      EOSQL
+
+      echo "[initdb] roles armoryhub_migrator / armoryhub_app created"
+
+  tailscale_serve:
+    content: |
+      {
+        "//": [
+          "Tailscale serve configuration for the ArmoryHub sidecar.",
+          "",
+          "Gives ArmoryHub its OWN tailnet hostname (armoryhub.<tailnet>.ts.net) instead",
+          "of squatting the host machine's name. The box keeps its own identity for",
+          "CasaOS and anything else it runs.",
+          "",
+          "The proxy target is `app:3000` on the internal compose network, NOT a host",
+          "port — so with this sidecar no host port is needed to REACH the app. The",
+          "compose file still publishes one on loopback for local tooling; remove the",
+          "app service's ports: block if you want nothing bound on the host at all.",
+          "",
+          "$${TS_CERT_DOMAIN} is substituted by the container at start with this node's",
+          "full MagicDNS name, so this file needs no per-customer editing."
+        ],
+        "TCP": {
+          "443": {
+            "HTTPS": true
+          }
+        },
+        "Web": {
+          "$${TS_CERT_DOMAIN}:443": {
+            "Handlers": {
+              "/": {
+                "Proxy": "http://app:3000"
+              }
+            }
+          }
+        }
+      }
+
+  caddyfile:
+    content: |
+      # Caddy — the "I already own a domain and want a public URL" path.
+      #
+      # TAILSCALE IS PREFERRED. `tailscale serve --bg http://localhost:3000` gets a real
+      # auto-renewing Let's Encrypt certificate with no port forwarding, no DNS record
+      # and no firewall changes, and exposes nothing to the public internet (plan §11).
+      # Use this file only if you specifically want a public hostname.
+      #
+      # This file is yours to edit — hostname, extra headers, additional routes, basic
+      # auth, whatever you need. It is deliberately minimal rather than locked down.
+      #
+      # Deliberately thin: the app already sets HSTS, X-Frame-Options, X-Content-Type-
+      # Options, Referrer-Policy, Permissions-Policy and a nonce-based CSP via
+      # middleware. Setting any of those here would either duplicate or silently
+      # conflict with the app's own values — in particular a second CSP header is
+      # treated as an additional restriction by browsers, so both must be satisfied,
+      # which breaks the page in ways that look like an app bug.
+      #
+      # Two variables:
+      #   CADDY_SITE_ADDRESS  the hostname to serve, e.g. armory.example.com
+      #                       Use `https://host:port` or `host:port` for a custom port.
+      #   CADDY_ACME_EMAIL    contact address for Let's Encrypt expiry notices
+      #
+      # For local testing, set CADDY_SITE_ADDRESS to something ending in `.localhost`
+      # (Caddy issues a local-CA cert automatically, no ACME, no public DNS).
+      #
+      # ⚠️ NON-STANDARD PORTS: if you map Caddy to anything other than 80/443, the site
+      # address MUST include the port, e.g. CADDY_SITE_ADDRESS=armory.example.com:8443.
+      # Otherwise Caddy's automatic HTTP→HTTPS redirect points at the canonical :443 and
+      # drops your port — verified: a request to :8080 redirected to
+      # `https://armoryhub.localhost/login`, with no port, which does not resolve.
+      # On the standard 80/443 pair this is correct and needs nothing.
+
+      {
+      	# Off by default so a test run never hammers Let's Encrypt. Set
+      	# CADDY_ACME_EMAIL to a real address for a real deployment.
+      	email {$$CADDY_ACME_EMAIL:admin@localhost}
+
+      	# Uncomment for a dry run against Let's Encrypt's staging CA when first
+      	# wiring up a real domain. Staging certs are untrusted by browsers but the
+      	# rate limits are far higher, so a misconfiguration costs nothing.
+      	# acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
+      }
+
+      {$$CADDY_SITE_ADDRESS:armoryhub.localhost} {
+      	# `app` resolves on the compose network. Caddy sets X-Forwarded-For,
+      	# X-Forwarded-Proto and X-Forwarded-Host by default and preserves the Host
+      	# header, which is what Next needs to build correct absolute URLs.
+      	reverse_proxy app:3000
+
+      	encode zstd gzip
+
+      	# Uploads are encrypted photos and documents; the default 10 MB would reject
+      	# them. Matches the 100 MB document limit from migration 00003.
+      	request_body {
+      		max_size 100MB
+      	}
+
+      	log {
+      		output stderr
+      		format console
+      		# Access logs on a single-user instance are mostly noise, and they are one
+      		# more place a URL could be retained. ERROR keeps real failures visible.
+      		level ERROR
+      	}
+      }
+
+volumes:
+  pgdata:
+  appdata:
+  # Tailscale node identity. Losing this makes the node re-register on next start,
+  # which consumes an auth key and can change the hostname.
+  tailscale_state:
+  caddy_data:
+  caddy_config:
+  # Separate volume so `docker compose down -v` on the data volumes does not also
+  # destroy the backups — which is precisely when they are needed most.
+  backups:
