@@ -14,6 +14,11 @@
 # ~/armoryhub. Re-running it on an existing install stops rather than overwriting.
 #
 # Set ARMORYHUB_DIR to install somewhere other than ~/armoryhub.
+#
+# Set ARMORYHUB_TS_HOSTNAME to choose the name your instance gets on your private
+# network, e.g. ARMORYHUB_TS_HOSTNAME=armory gives armory.<your-tailnet>.ts.net.
+# Worth doing if you have reinstalled several times: certificates are rate-limited
+# per hostname (5 per week), and a fresh name sidesteps a limit you have already hit.
 set -eu
 
 REPO="${ARMORYHUB_CONFIG_REPO:-marcjwrigg/armoryhub-selfhost-install}"
@@ -114,7 +119,7 @@ COMPOSE_PROFILES=tailscale
 # approval link. Get a reusable, non-ephemeral key from
 # https://login.tailscale.com/admin/settings/keys
 # TS_AUTHKEY=
-TS_HOSTNAME=armoryhub
+TS_HOSTNAME=${ARMORYHUB_TS_HOSTNAME:-armoryhub}
 EOF
 chmod 600 .env
 ok 'generated .env with unique secrets (mode 600)'
@@ -241,6 +246,76 @@ elif [ -n "$AUTH_URL" ]; then
 else
   warn 'Tailscale did not report an auth URL in time.'
   say "  Check with:  cd $DIR && docker compose logs tailscale"
+fi
+
+# Wait for the certificate, and say what went wrong if it does not arrive.
+#
+# Without this the installer prints a URL and exits, and any certificate failure
+# reaches the operator as a blank page with an empty browser console — no error, no
+# clue, and nothing that points at TLS. That is the single worst failure mode this
+# script has, because everything else looks healthy: containers up, app answering on
+# loopback, Tailscale connected.
+#
+# Certificates are issued on demand, on the first HTTPS request, so this makes that
+# request rather than waiting to be surprised later.
+if [ -n "$TS_CONTAINER" ]; then
+  say ''
+  printf '  Waiting for the HTTPS certificate'
+  CERT_OK=""
+  i=0
+  while [ "$i" -lt 30 ]; do
+    NAME=$(docker exec "$TS_CONTAINER" tailscale status --json 2>/dev/null \
+      | tr ',' '\n' | grep -o '"DNSName":"[^"]*"' | head -1 | cut -d'"' -f4 | sed 's/\.$//' || true)
+    if [ -n "$NAME" ] && docker exec "$TS_CONTAINER" \
+         wget -q -T 8 -O /dev/null "https://$NAME/api/selfhost/auth/status" 2>/dev/null; then
+      CERT_OK=yes
+      break
+    fi
+    printf '.'
+    i=$((i + 1)); sleep 4
+  done
+  printf '\n'
+
+  if [ -n "$CERT_OK" ]; then
+    ok "HTTPS working: https://$NAME"
+    say ''
+    say '  ============================================================'
+    say "   Open:  https://$NAME"
+    say '  ============================================================'
+  else
+    # Distinguish "not approved yet" from a real certificate failure, because the
+    # remedies are completely different.
+    RATE=$(docker logs "$TS_CONTAINER" 2>&1 | grep -oE 'too many certificates.*retry after [0-9: -]+UTC' | tail -1 || true)
+    say ''
+    if [ -n "$RATE" ]; then
+      warn 'HTTPS is blocked by a Let'"'"'s Encrypt rate limit.'
+      say ''
+      say "    $RATE"
+      say ''
+      say '  Five certificates have already been issued for this exact hostname in the'
+      say '  last 7 days, which happens after repeated reinstalls. The limit is per'
+      say '  hostname, so you have two options:'
+      say ''
+      say '    1. Wait until the time above, then:  docker compose up -d'
+      say '    2. Use a different name now:'
+      say "         cd $DIR"
+      say '         sed -i "s|^TS_HOSTNAME=.*|TS_HOSTNAME=armory2|" .env'
+      say '         sed -i "s|^APP_URL=.*|APP_URL=https://armory2.<your-tailnet>.ts.net|" .env'
+      say '         docker compose up -d --force-recreate tailscale'
+      say ''
+      say '  Until then the app is running but only reachable at'
+      say "  http://localhost:${APP_PORT:-8477} from this machine."
+    elif [ -n "$AUTH_URL" ]; then
+      say '  Not approved yet — that is expected if you have not opened the link above.'
+      say '  Once you approve the machine, HTTPS starts working within a few seconds.'
+      say ''
+      say '  If it does not, check for a certificate error with:'
+      say "    cd $DIR && docker compose logs tailscale | grep -i cert"
+    else
+      warn 'HTTPS did not come up, and no certificate error was reported.'
+      say "  Check:  cd $DIR && docker compose logs tailscale"
+    fi
+  fi
 fi
 
 say ''

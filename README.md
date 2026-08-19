@@ -143,14 +143,29 @@ worth knowing before you rely on it at a range with no signal.
 
 ## Running under CasaOS, Portainer or Dockge
 
-The compose file is self-contained, so it works in any of them.
+The compose file works in any of them, but **CasaOS rewrites it when you save
+anything through its settings form**, including when you set the Web UI address.
+Measured on a real install, saving once:
 
-- **Set the Web UI address yourself**, as described above. This is the one manual
-  step, and skipping it is the most common way to end up with a broken-looking
-  install.
-- **Do not edit anything else from the CasaOS settings form.** It cannot represent
-  everything in this compose file, and saving can rewrite the configuration
-  incorrectly. Use the terminal for changes.
+- **removes the `tailscale`, `restore` and `caddy` services**, because CasaOS does
+  not understand Compose profiles and drops what it cannot model. Containers already
+  running keep running, so nothing appears wrong — but `docker compose` can no longer
+  start or restart Tailscale, and reports `no such service: tailscale`.
+- **converts `$$` to `$`**, so the embedded database setup would run with an empty
+  username on a fresh install.
+- **copies your passwords out of `.env` into the compose file**, which is
+  world-readable, while `.env` is not.
+
+None of that breaks a running instance, which is why it goes unnoticed. It bites
+later, when something needs restarting.
+
+**The safest arrangement is to run this from a terminal** and, if you want a tile on
+the CasaOS dashboard, add it as an **external link** to your `https://...ts.net`
+address rather than importing the compose file. You get the icon and the click-through
+with CasaOS having no authority over the configuration.
+
+If you do let CasaOS manage it, keep a copy of the original compose file. CasaOS moves
+what it replaces to `docker-compose.yml.bak`, owned by root.
 
 ## Updating
 
