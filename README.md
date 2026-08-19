@@ -217,7 +217,8 @@ cloud storage is low-risk.
 | | Protects | Recoverable? |
 |---|---|---|
 | **Password** | signing in | **Yes** |
-| **PIN / passphrase** | your data | **No. Never.** |
+| **PIN** | your data | **No. Never.** |
+| **Passphrase** | your data on a new device | **No. Never.** |
 
 Reset a forgotten password from the server, from any directory:
 
@@ -225,10 +226,16 @@ Reset a forgotten password from the server, from any directory:
 docker exec -it $(docker ps -q -f name=armoryhub.*app) node reset-password.js
 ```
 
-Your PIN and passphrase cannot be reset or recovered by anyone, including us. They
-never leave your device in a usable form — that is what makes the encryption
-meaningful. If you lose both, your records are permanently unreadable. Set up a
-recovery passphrase as soon as you sign in and keep it somewhere safe and offline.
+**Your PIN cannot be reset or recovered by anyone, including us, and the passphrase
+is not a way around that.** Neither ever leaves your device in a usable form, which
+is what makes the encryption meaningful.
+
+The two are not alternatives. The passphrase exists so you can set ArmoryHub up on a
+**new device** — you enter the passphrase, then your existing PIN. It is insurance
+against losing a device, not against forgetting your PIN.
+
+So: **write your PIN down too**, and keep both somewhere safe and offline. If you
+forget your PIN, your records cannot be decrypted, passphrase or not.
 
 ---
 

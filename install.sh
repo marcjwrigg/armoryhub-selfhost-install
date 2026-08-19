@@ -235,10 +235,13 @@ else
 fi
 
 say ''
-say '  Create your account in the browser once HTTPS is up. You will set a'
-say '  password (to sign in) and a PIN (to decrypt your data) — different things.'
-say '  Your PIN cannot be recovered by anyone, so set up a recovery passphrase'
-say '  immediately and write it down.'
+say '  Create your account in the browser once HTTPS is up. You will set a password'
+say '  (to sign in) and a PIN (to decrypt your data) — different things. The password'
+say '  can be reset from this server. The PIN CANNOT, by anyone, including us.'
+say ''
+say '  Write your PIN down and keep it somewhere safe and offline. Also set up a'
+say '  recovery passphrase, which is what lets you add a new device later — but note'
+say '  it does NOT get you back in if you forget the PIN. You need both.'
 say ''
 say '  Useful commands:'
 say "    cd $DIR"
