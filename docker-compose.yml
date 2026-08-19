@@ -1,7 +1,7 @@
 # ArmoryHub self-hosted stack.
 #
-#   cp .env.selfhost.example .env.selfhost   # then fill in the secrets
-#   docker compose -f docker-compose.selfhost.yml --env-file .env.selfhost up -d
+#   cp env.example .env   # then fill in the secrets
+#   docker compose up -d
 #
 # ---------------------------------------------------------------------------
 # You need HTTPS. Pick one of these three.
@@ -13,8 +13,7 @@
 #
 # 1. TAILSCALE SIDECAR — recommended. Start it with:
 #
-#      docker compose -f docker-compose.selfhost.yml --env-file .env.selfhost \
-#        --profile tailscale up -d
+#      docker compose --profile tailscale up -d
 #
 #    It prints a link. Open it, sign in, approve the machine, and your instance is
 #    live at https://armoryhub.<your-tailnet>.ts.net with a real certificate that
@@ -36,7 +35,7 @@
 #
 # 3. CADDY — only if you want a PUBLIC address on a domain you own:
 #
-#      docker compose -f docker-compose.selfhost.yml --profile caddy up -d
+#      docker compose --profile caddy up -d
 #
 #    This one needs a DNS A record and ports 80 and 443 reachable from the
 #    internet, and it puts your instance on the public internet, which is the
@@ -136,7 +135,7 @@ services:
 
   # Gives ArmoryHub its own address on your private network, with real HTTPS.
   #
-  #   docker compose -f docker-compose.selfhost.yml --profile tailscale up -d
+  #   docker compose --profile tailscale up -d
   #
   # It prints a link; open it and approve the machine. You end up with
   # https://armoryhub.<your-tailnet>.ts.net, and this server keeps its own name for
