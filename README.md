@@ -42,7 +42,7 @@ internet.
 ## Install (one command)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/marcjwrigg/armoryhub-selfhost-install/main/install.sh | sh
+curl -fsSL https://armoryhub.app/install.sh | sh
 ```
 
 It checks Docker, generates every secret for you, pulls the image, starts
