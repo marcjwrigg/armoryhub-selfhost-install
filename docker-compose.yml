@@ -55,7 +55,7 @@ services:
       APP_DB_PASSWORD: ${APP_DB_PASSWORD:?set APP_DB_PASSWORD}
       MIGRATOR_DB_PASSWORD: ${MIGRATOR_DB_PASSWORD:?set MIGRATOR_DB_PASSWORD}
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - "pgdata:/var/lib/postgresql/data"
       # Runs once, on an empty data directory: creates the migrator/app roles,
       # uuid-ossp, and the supabase_realtime publication stub.
     configs:
@@ -118,7 +118,7 @@ services:
       ENCRYPTION_AUTO_UNLOCK: "false"
       BACKUP_DIR: /data/backups
     volumes:
-      - appdata:/data
+      - "appdata:/data"
     ports:
       # Bound to LOOPBACK by default, not 0.0.0.0.
       #
@@ -177,7 +177,7 @@ services:
       TS_SERVE_CONFIG: /config/serve.json
       TS_USERSPACE: "true"
     volumes:
-      - tailscale_state:/var/lib/tailscale
+      - "tailscale_state:/var/lib/tailscale"
     configs:
       - source: tailscale_serve
         target: /config/serve.json
@@ -206,8 +206,8 @@ services:
       BACKUP_KEEP_WEEKLY: ${BACKUP_KEEP_WEEKLY:-4}
     volumes:
       # Read-only: a backup process has no business writing to live data.
-      - appdata:/data:ro
-      - backups:/backups
+      - "appdata:/data:ro"
+      - "backups:/backups"
     entrypoint: ["/bin/sh", "/app/backup.sh", "loop"]
 
   # One-off admin tasks: restore, verify, manual backup, list.
@@ -236,8 +236,8 @@ services:
       BACKUP_DIR: /backups
       FILES_DIR: /data/files
     volumes:
-      - appdata:/data
-      - backups:/backups
+      - "appdata:/data"
+      - "backups:/backups"
     entrypoint: ["/bin/sh", "/app/backup.sh"]
 
   # Caddy — automatic HTTPS for customers who own a domain.
@@ -261,8 +261,8 @@ services:
     volumes:
       # Certificates and ACME account keys. Losing this volume means re-issuing,
       # which counts against Let's Encrypt rate limits.
-      - caddy_data:/data
-      - caddy_config:/config
+      - "caddy_data:/data"
+      - "caddy_config:/config"
     # SYMMETRIC port mapping, deliberately.
     #
     # Caddy binds whatever port appears in CADDY_SITE_ADDRESS *inside* the
