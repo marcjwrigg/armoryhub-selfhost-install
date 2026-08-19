@@ -9,9 +9,12 @@ credentials, and no build step required to install.
 curl -fsSL https://raw.githubusercontent.com/marcjwrigg/armoryhub-selfhost-install/main/install.sh | sh
 ```
 
-It checks Docker, generates every secret for you, pulls the image and starts up.
-Nothing to edit. Read it first if you would rather not pipe a script to a shell —
-it is short and does exactly what it says.
+It checks Docker, generates every secret for you, pulls the image, starts
+everything including HTTPS, and finishes by printing a link to approve the machine
+on your Tailscale network. Nothing to edit and no keys to generate.
+
+Read it first if you would rather not pipe a script to a shell — it is short and
+does exactly what it says.
 
 ### Or manually
 
@@ -34,18 +37,23 @@ Browsers only allow the encryption ArmoryHub depends on over HTTPS or on
 `localhost`. If you reach the app by IP over plain `http://` you will be able to
 sign in and then fail to unlock your data.
 
-The simplest route gives ArmoryHub its own name on your private Tailscale network,
-with a real certificate, no port forwarding and no DNS setup:
+The installer handles this: it starts a Tailscale sidecar and prints a link. Click
+it, sign in, approve the machine, and your instance is live at
+`https://armoryhub.<your-tailnet>.ts.net` with a real auto-renewing certificate —
+no port forwarding, no DNS record, no firewall changes.
+
+If the link expires before you use it, get a fresh one:
 
 ```bash
-# add TS_AUTHKEY to .env — https://login.tailscale.com/admin/settings/keys
-docker compose --profile tailscale up -d
+docker compose exec tailscale tailscale status
 ```
 
-Then open `https://armoryhub.<your-tailnet>.ts.net`.
+For an unattended install, put a reusable non-ephemeral `TS_AUTHKEY` in `.env`
+before running and it will register without prompting.
 
-If you own a domain and want a public URL, see the Caddy section in `env.example`.
-That needs a DNS record and ports 80 and 443 reachable from the internet.
+If you own a domain and want a public URL instead, see the Caddy section in
+`env.example`. That needs a DNS record and ports 80 and 443 reachable from the
+internet.
 
 ## Updating
 

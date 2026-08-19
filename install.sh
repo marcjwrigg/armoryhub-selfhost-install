@@ -84,14 +84,13 @@ BACKUP_HOUR=3
 BACKUP_KEEP_DAILY=7
 BACKUP_KEEP_WEEKLY=4
 
-# --- HTTPS (recommended) -----------------------------------------------------
-# Browsers only permit the encryption ArmoryHub needs over HTTPS or on localhost,
-# so reaching this by IP over plain http:// will let you sign in and then fail to
-# unlock your data.
+# --- HTTPS -------------------------------------------------------------------
+# The installer starts Tailscale for you and prints a link to approve this machine.
+# Nothing needs setting here.
 #
-# Get a key at https://login.tailscale.com/admin/settings/keys (reusable,
-# non-ephemeral), put it below, then:
-#   docker compose --profile tailscale up -d
+# TS_AUTHKEY is only for UNATTENDED installs, where no one is present to click the
+# approval link. Get a reusable, non-ephemeral key from
+# https://login.tailscale.com/admin/settings/keys
 # TS_AUTHKEY=
 TS_HOSTNAME=armoryhub
 EOF
@@ -125,26 +124,90 @@ if [ "$i" -ge 60 ]; then
     cd $DIR && docker compose logs app"
 fi
 
-# --- next steps --------------------------------------------------------------
+# --- HTTPS -------------------------------------------------------------------
+# Started as part of the install, not left as homework.
+#
+# The previous version finished by telling the operator to fetch an auth key, edit
+# a hidden dotfile and re-run compose. Every one of those is friction, and the file
+# being a dotfile meant it could not be found at all. tailscaled will happily
+# register interactively instead: it prints a one-click URL and waits.
+#
+# TS_AUTHKEY is still honoured for unattended installs; it is simply no longer the
+# documented path.
 say ''
-say '  Installed.'
+say '  Setting up HTTPS...'
 say ''
-say '  NEXT: set up HTTPS before creating your account.'
-say '  Encryption cannot work over plain http:// except on localhost, so without'
-say '  this you will be able to sign in but not unlock your data.'
+say '  This is required, not optional: browsers only allow the encryption ArmoryHub'
+say '  needs over HTTPS or on localhost. Without it you can sign in but not unlock'
+say '  your data.'
 say ''
-say '    1. Get a Tailscale auth key (reusable, non-ephemeral):'
-say '         https://login.tailscale.com/admin/settings/keys'
-say "    2. Add it to $DIR/.env as   TS_AUTHKEY=tskey-auth-..."
-say '    3. Then run:'
-say "         cd $DIR && docker compose --profile tailscale up -d"
+
+if ! docker compose --profile tailscale up -d >/dev/null 2>&1; then
+  warn 'Could not start the Tailscale sidecar.'
+  warn "Start it later with:  cd $DIR && docker compose --profile tailscale up -d"
+  exit 0
+fi
+ok 'Tailscale sidecar started'
+
+TS_CONTAINER=""
+i=0
+while [ "$i" -lt 20 ]; do
+  TS_CONTAINER=$(docker compose ps -q tailscale 2>/dev/null || true)
+  [ -n "$TS_CONTAINER" ] && break
+  i=$((i + 1)); sleep 2
+done
+
+# Either an auth URL (no key) or successful registration (key present).
+AUTH_URL=""
+TS_NAME=""
+printf '  Waiting for Tailscale'
+i=0
+while [ "$i" -lt 40 ]; do
+  if [ -n "$TS_CONTAINER" ]; then
+    AUTH_URL=$(docker logs "$TS_CONTAINER" 2>&1 | grep -oE 'https://login\.tailscale\.com/a/[a-z0-9]+' | tail -1 || true)
+    TS_NAME=$(docker exec "$TS_CONTAINER" tailscale status --json 2>/dev/null \
+      | tr ',' '\n' | grep -o '"DNSName":"[^"]*"' | head -1 | cut -d'"' -f4 | sed 's/\.$//' || true)
+  fi
+  [ -n "$AUTH_URL" ] && break
+  [ -n "$TS_NAME" ] && break
+  printf '.'
+  i=$((i + 1)); sleep 3
+done
+printf '\n'
+
 say ''
-say '    That gives you https://armoryhub.<your-tailnet>.ts.net with a real'
-say '    certificate, no port forwarding and no DNS setup.'
+if [ -n "$TS_NAME" ]; then
+  ok 'Tailscale registered automatically (auth key supplied)'
+  say ''
+  say '  ============================================================'
+  say "   Open:  https://$TS_NAME"
+  say '  ============================================================'
+elif [ -n "$AUTH_URL" ]; then
+  say '  ============================================================'
+  say '   ONE STEP LEFT — approve this machine:'
+  say ''
+  say "     $AUTH_URL"
+  say ''
+  say '   Sign in, approve it, and your instance will be live at'
+  say '   https://armoryhub.<your-tailnet>.ts.net'
+  say '  ============================================================'
+  say ''
+  say '  The link is single-use. If it expires, get a fresh one with:'
+  say "    cd $DIR && docker compose exec tailscale tailscale status"
+else
+  warn 'Tailscale did not report an auth URL in time.'
+  say "  Check with:  cd $DIR && docker compose logs tailscale"
+fi
+
+say ''
+say '  Create your account in the browser once HTTPS is up. You will set a'
+say '  password (to sign in) and a PIN (to decrypt your data) — different things.'
+say '  Your PIN cannot be recovered by anyone, so set up a recovery passphrase'
+say '  immediately and write it down.'
 say ''
 say '  Useful commands:'
 say "    cd $DIR"
-say '    docker compose logs -f app                                  # what it is doing'
-say '    docker compose --profile tools run --rm restore list        # backups'
+say '    docker compose logs -f app                                    # what it is doing'
+say '    docker compose --profile tools run --rm restore list          # backups'
 say '    docker exec -it $(docker ps -q -f name=armoryhub.*app) node reset-password.js'
 say ''
