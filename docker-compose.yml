@@ -147,6 +147,13 @@ services:
   #
   # Keep ./data/tailscale. That is where this machine's identity is stored — delete
   # it and your instance comes back as a different machine, at a different address.
+  #
+  # Keep COMPOSE_PROFILES=tailscale in your env file too. This is an optional service,
+  # so it starts only when Compose is told to include it; once it has stopped, a plain
+  # `docker compose up -d` leaves it down and your HTTPS address stops resolving —
+  # which in a browser looks like a blank page rather than an error.
+  #
+  # `docker compose ps` should always list four services: app, db, backup, tailscale.
   tailscale:
     profiles: ["tailscale"]
     image: tailscale/tailscale:stable

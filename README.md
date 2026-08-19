@@ -158,6 +158,7 @@ The compose file is self-contained, so it works in any of them.
 docker compose pull
 docker compose down
 docker compose up -d
+docker compose ps          # expect: app, db, backup, tailscale
 ```
 
 Use `down` then `up`, **not** `up -d` alone. Some Docker Compose versions replace
@@ -166,6 +167,23 @@ to serve the previous version.
 
 Database changes apply automatically on start. A backup is taken first and the
 upgrade aborts if that backup fails.
+
+### If your HTTPS address stops working after an upgrade
+
+Check `docker compose ps` includes **tailscale**. If it does not, that is why: the
+address resolves to nothing, which in a browser looks like a blank page with an empty
+console rather than an error.
+
+Tailscale is an optional service, so it only starts when Compose is told to include
+it. Once it has stopped for any reason, a plain `up -d` leaves it down.
+
+```bash
+grep COMPOSE_PROFILES .env || echo 'COMPOSE_PROFILES=tailscale' >> .env
+docker compose up -d
+```
+
+That line makes every future `up -d` include it. Installs created by `install.sh`
+have it already. Set it to `caddy` instead if you use a public domain.
 
 ## Uninstalling
 

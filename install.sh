@@ -97,6 +97,15 @@ BACKUP_HOUR=3
 BACKUP_KEEP_DAILY=7
 BACKUP_KEEP_WEEKLY=4
 
+# Keeps the Tailscale sidecar in every future 'docker compose up -d'.
+#
+# Without this, Tailscale only starts when you remember --profile tailscale. Once it
+# has been stopped for any reason, a plain 'up -d' leaves it down and your HTTPS
+# address quietly stops resolving, which looks like the app itself being broken.
+#
+# Change this to 'caddy' if you switch to a public domain instead.
+COMPOSE_PROFILES=tailscale
+
 # --- HTTPS -------------------------------------------------------------------
 # The installer starts Tailscale for you and prints a link to approve this machine.
 # Nothing needs setting here.
