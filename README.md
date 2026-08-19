@@ -124,4 +124,4 @@ recovery passphrase as soon as you sign in and keep it somewhere safe and offlin
 
 ---
 
-Version: `0.1.1`
+Version: `0.1.2`
