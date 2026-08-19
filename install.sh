@@ -215,7 +215,7 @@ while [ "$i" -lt 40 ]; do
   if [ -n "$TS_CONTAINER" ]; then
     AUTH_URL=$(docker logs "$TS_CONTAINER" 2>&1 | grep -oE 'https://login\.tailscale\.com/a/[a-z0-9]+' | tail -1 || true)
     TS_NAME=$(docker exec "$TS_CONTAINER" tailscale status --json 2>/dev/null \
-      | tr ',' '\n' | grep -o '"DNSName":"[^"]*"' | head -1 | cut -d'"' -f4 | sed 's/\.$//' || true)
+      | grep -m1 '"DNSName"' | cut -d'"' -f4 | sed 's/\.$//' || true)
   fi
   [ -n "$AUTH_URL" ] && break
   [ -n "$TS_NAME" ] && break
@@ -265,7 +265,7 @@ if [ -n "$TS_CONTAINER" ]; then
   i=0
   while [ "$i" -lt 30 ]; do
     NAME=$(docker exec "$TS_CONTAINER" tailscale status --json 2>/dev/null \
-      | tr ',' '\n' | grep -o '"DNSName":"[^"]*"' | head -1 | cut -d'"' -f4 | sed 's/\.$//' || true)
+      | grep -m1 '"DNSName"' | cut -d'"' -f4 | sed 's/\.$//' || true)
     if [ -n "$NAME" ] && docker exec "$TS_CONTAINER" \
          wget -q -T 8 -O /dev/null "https://$NAME/api/selfhost/auth/status" 2>/dev/null; then
       CERT_OK=yes
@@ -286,8 +286,27 @@ if [ -n "$TS_CONTAINER" ]; then
     # Distinguish "not approved yet" from a real certificate failure, because the
     # remedies are completely different.
     RATE=$(docker logs "$TS_CONTAINER" 2>&1 | grep -oE 'too many certificates.*retry after [0-9: -]+UTC' | tail -1 || true)
+
+    # Distinguish a TLS problem from a proxy problem. If the certificate itself is
+    # fine, HTTPS is working and the fault is between Tailscale and the app — usually
+    # just the app still starting, which returns 502 for a few seconds.
+    CERT_FINE=""
+    if [ -n "$NAME" ] && docker exec "$TS_CONTAINER" \
+         tailscale cert --cert-file /tmp/_c --key-file /tmp/_k "$NAME" >/dev/null 2>&1; then
+      CERT_FINE=yes
+    fi
+
     say ''
-    if [ -n "$RATE" ]; then
+    if [ -n "$CERT_FINE" ] && [ -z "$RATE" ]; then
+      ok "Certificate is valid for $NAME"
+      warn 'But the app did not answer through it yet.'
+      say ''
+      say '  Almost always the app still finishing its first start. Wait a few seconds'
+      say "  and open:  https://$NAME"
+      say ''
+      say '  If it keeps returning 502:'
+      say "    cd $DIR && docker compose logs app"
+    elif [ -n "$RATE" ]; then
       warn 'HTTPS is blocked by a Let'"'"'s Encrypt rate limit.'
       say ''
       say "    $RATE"
