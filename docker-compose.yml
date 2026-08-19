@@ -484,3 +484,54 @@ configs:
 # a bind mount inherits the host directory. The app and backup containers run as
 # uid 1001, so install.sh creates ./data/* and chowns it (via a throwaway root
 # container, so no host sudo is needed).
+
+# ---------------------------------------------------------------------------
+# CasaOS app metadata.
+#
+# CasaOS reads this to build its app card. Without it, it guesses from the image
+# name — producing a mangled title ("AmoryHub"), a generic cube icon, and no
+# description.
+#
+# ⚠️ ONE THING IT CANNOT KNOW: the Web UI address.
+#
+# The app is bound to 127.0.0.1 on purpose, so it is NOT reachable on the LAN and
+# CasaOS's "open" button cannot work by default. The real address is your Tailscale
+# hostname (https://armoryhub.<your-tailnet>.ts.net), which does not exist until the
+# machine is approved — long after this file is parsed. Set it once in the app's
+# CasaOS settings and it sticks.
+#
+# The alternative would be binding 0.0.0.0 so the LAN URL worked, which means
+# serving an unencrypted login form to everyone on the network. Not worth it.
+# ---------------------------------------------------------------------------
+x-casaos:
+  architectures:
+    - amd64
+    - arm64
+  main: app
+  author: ArmoryHub
+  developer: ArmoryHub
+  category: Utilities
+  title:
+    en_us: ArmoryHub
+  tagline:
+    en_us: Firearm inventory with zero-knowledge encryption
+  description:
+    en_us: >-
+      Firearm inventory, range data, reloading records and NFA tracking. All data is
+      encrypted on your device before it is stored, so this server never holds
+      anything readable — not even to you without your PIN.
+
+      Reach it over HTTPS via Tailscale. Because the app binds to localhost only,
+      the Web UI address below must be set to your Tailscale hostname after you
+      approve the machine.
+  icon: https://raw.githubusercontent.com/marcjwrigg/armoryhub-selfhost-install/main/icon.png
+  scheme: https
+  index: /
+  port_map: "8477"
+  tips:
+    before_install:
+      en_us: >-
+        HTTPS is required. Browsers only permit the encryption ArmoryHub depends on
+        over HTTPS or on localhost, so after install you must approve the Tailscale
+        machine and use the https://...ts.net address. Reaching it by IP over plain
+        http will let you sign in but not unlock your data.

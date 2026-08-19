@@ -55,6 +55,19 @@ If you own a domain and want a public URL instead, see the Caddy section in
 `env.example`. That needs a DNS record and ports 80 and 443 reachable from the
 internet.
 
+## Running under CasaOS, Portainer or Dockge
+
+The compose file is self-contained, so it works in any of them. Two things to know
+if you use CasaOS:
+
+- **Set the Web UI address yourself.** The app binds to `localhost` deliberately, so
+  it is not reachable over your LAN and CasaOS cannot guess the address. After you
+  approve the Tailscale machine, put `https://armoryhub.<your-tailnet>.ts.net` in the
+  app's settings.
+- **Do not edit anything else from the CasaOS settings form.** It cannot represent
+  everything in this compose file, and saving can rewrite the configuration
+  incorrectly. Use the terminal for changes.
+
 ## Updating
 
 ```bash
