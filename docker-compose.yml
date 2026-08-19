@@ -55,7 +55,7 @@ services:
       APP_DB_PASSWORD: ${APP_DB_PASSWORD:?set APP_DB_PASSWORD}
       MIGRATOR_DB_PASSWORD: ${MIGRATOR_DB_PASSWORD:?set MIGRATOR_DB_PASSWORD}
     volumes:
-      - "pgdata:/var/lib/postgresql/data"
+      - "./data/postgres:/var/lib/postgresql/data"
       # Runs once, on an empty data directory: creates the migrator/app roles,
       # uuid-ossp, and the supabase_realtime publication stub.
     configs:
@@ -118,7 +118,7 @@ services:
       ENCRYPTION_AUTO_UNLOCK: "false"
       BACKUP_DIR: /data/backups
     volumes:
-      - "appdata:/data"
+      - "./data/app:/data"
     ports:
       # Bound to LOOPBACK by default, not 0.0.0.0.
       #
@@ -177,7 +177,7 @@ services:
       TS_SERVE_CONFIG: /config/serve.json
       TS_USERSPACE: "true"
     volumes:
-      - "tailscale_state:/var/lib/tailscale"
+      - "./data/tailscale:/var/lib/tailscale"
     configs:
       - source: tailscale_serve
         target: /config/serve.json
@@ -206,8 +206,8 @@ services:
       BACKUP_KEEP_WEEKLY: ${BACKUP_KEEP_WEEKLY:-4}
     volumes:
       # Read-only: a backup process has no business writing to live data.
-      - "appdata:/data:ro"
-      - "backups:/backups"
+      - "./data/app:/data:ro"
+      - "./data/backups:/backups"
     entrypoint: ["/bin/sh", "/app/backup.sh", "loop"]
 
   # One-off admin tasks: restore, verify, manual backup, list.
@@ -236,8 +236,8 @@ services:
       BACKUP_DIR: /backups
       FILES_DIR: /data/files
     volumes:
-      - "appdata:/data"
-      - "backups:/backups"
+      - "./data/app:/data"
+      - "./data/backups:/backups"
     entrypoint: ["/bin/sh", "/app/backup.sh"]
 
   # Caddy — automatic HTTPS for customers who own a domain.
@@ -261,8 +261,8 @@ services:
     volumes:
       # Certificates and ACME account keys. Losing this volume means re-issuing,
       # which counts against Let's Encrypt rate limits.
-      - "caddy_data:/data"
-      - "caddy_config:/config"
+      - "./data/caddy:/data"
+      - "./data/caddy-config:/config"
     # SYMMETRIC port mapping, deliberately.
     #
     # Caddy binds whatever port appears in CADDY_SITE_ADDRESS *inside* the
@@ -466,14 +466,21 @@ configs:
       	}
       }
 
-volumes:
-  pgdata:
-  appdata:
-  # Tailscale node identity. Losing this makes the node re-register on next start,
-  # which consumes an auth key and can change the hostname.
-  tailscale_state:
-  caddy_data:
-  caddy_config:
-  # Separate volume so `docker compose down -v` on the data volumes does not also
-  # destroy the backups — which is precisely when they are needed most.
-  backups:
+# No top-level `volumes:` block.
+#
+# Everything is a bind mount under ./data, deliberately:
+#
+#  - CasaOS (and other compose UIs) cannot represent a NAMED volume, because their
+#    forms want a host path. Importing this file with named volumes failed with
+#    "service \"db\" refers to undefined volume [object Object]: invalid compose
+#    project", and the settings dialog refused to save anything at all.
+#  - `docker compose down -v` does NOT delete bind mounts. With named volumes it
+#    destroyed the database, files AND backups in one command. Bind mounts make
+#    that mistake survivable.
+#  - The operator can see, copy and back up their own data with ordinary tools
+#    rather than reaching into /var/lib/docker/volumes.
+#
+# The trade-off is ownership: Docker initialises a named volume from the image, but
+# a bind mount inherits the host directory. The app and backup containers run as
+# uid 1001, so install.sh creates ./data/* and chowns it (via a throwaway root
+# container, so no host sudo is needed).

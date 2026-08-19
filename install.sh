@@ -97,6 +97,27 @@ EOF
 chmod 600 .env
 ok 'generated .env with unique secrets (mode 600)'
 
+# --- data directories --------------------------------------------------------
+# Bind mounts, not named volumes, so the operator can see and back up their own
+# data and so `down -v` cannot destroy it. The cost is ownership: a named volume
+# inherits permissions from the image, a bind mount inherits them from the host.
+#
+# app and backup run as uid 1001 inside the image, so those directories must be
+# owned by 1001 or the first write fails with EACCES — exactly the bug that
+# silently broke backups earlier. postgres and tailscale run as root initially and
+# fix their own directories, so they are left alone.
+#
+# chown via a throwaway root container: the Docker daemon is already root, so this
+# needs no host sudo and works whatever uid the operator happens to be.
+mkdir -p data/postgres data/app data/backups data/tailscale
+if ! docker run --rm -v "$DIR/data:/d" alpine:latest \
+      sh -c 'chown -R 1001:1001 /d/app /d/backups' >/dev/null 2>&1; then
+  warn 'Could not set ownership on ./data/app and ./data/backups.'
+  warn 'If the app or backups fail with permission errors, run:'
+  warn "  docker run --rm -v $DIR/data:/d alpine chown -R 1001:1001 /d/app /d/backups"
+fi
+ok 'created ./data (postgres, app, backups, tailscale)'
+
 # --- start -------------------------------------------------------------------
 say ''
 say '  Pulling and starting (first run downloads ~150 MB)...'
