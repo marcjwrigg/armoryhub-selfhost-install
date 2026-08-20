@@ -286,6 +286,29 @@ done
 say ''
 if [ -n "$TS_NAME" ]; then
   ok "Tailscale approved: $TS_NAME"
+
+  # Point the dashboard app-card icon at this instance now that we know its address.
+  #
+  # The published compose file ships the icon embedded as a data: URI, because at
+  # publish time nobody knows what this machine will be called. That always works but
+  # is only 96px. Now that Tailscale has registered we know the real hostname, so we
+  # can point at the full-size icon the app already serves — still entirely on your own
+  # network, still no third-party fetch.
+  #
+  # Only swapped when Tailscale is in use. Anyone behind their own reverse proxy keeps
+  # the embedded copy, which needs no address at all.
+  #
+  # sed to a temp file and rename, rather than sed -i: -i is a GNU/BSD extension and
+  # its argument handling differs between them.
+  if grep -q '^  icon: data:image/png' docker-compose.yml 2>/dev/null; then
+    if sed "s|^  icon: data:image/png.*|  icon: https://$TS_NAME/apple-touch-icon.png|" \
+         docker-compose.yml > docker-compose.yml.tmp 2>/dev/null \
+       && mv docker-compose.yml.tmp docker-compose.yml; then
+      ok "app icon set to https://$TS_NAME/apple-touch-icon.png"
+    else
+      rm -f docker-compose.yml.tmp
+    fi
+  fi
 else
   warn 'The machine was not approved in time.'
   say ''

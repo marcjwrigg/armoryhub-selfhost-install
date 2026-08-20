@@ -144,6 +144,33 @@ sed -i 's/^COMPOSE_PROFILES=.*/COMPOSE_PROFILES=/' .env
 over HTTPS or on `localhost`, so reaching it by plain `http://` at a LAN address will
 let you sign in and then fail to unlock your data.
 
+### The dashboard app icon
+
+Nothing to do here — this is just so the behaviour is not surprising.
+
+The compose file ships with a small icon embedded directly in it, because at the time
+it is published nobody knows what your machine will be called. Once Tailscale
+registers, the installer replaces that with the full-size icon your own instance
+serves:
+
+```yaml
+  icon: https://armory.your-tailnet.ts.net/apple-touch-icon.png
+```
+
+Either way the image comes from your own network and nothing is fetched from us or
+from GitHub — a linked icon would break on an air-gapped network and would tell a third
+party that this machine runs ArmoryHub.
+
+Two consequences worth knowing:
+
+- **Re-downloading `docker-compose.yml` resets it** to the embedded copy. Harmless, and
+  the next install run puts it back.
+- **Changing your Tailscale hostname breaks it**, because the URL is baked in. Edit that
+  one line, or replace it with the embedded copy from a fresh download.
+
+If you use your own reverse proxy rather than Tailscale, the embedded icon is kept and
+needs no address at all.
+
 ### Where to install it — important on NAS hardware
 
 The database lives in `./data/postgres`, next to the compose file. **Put it on
