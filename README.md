@@ -67,6 +67,24 @@ Watch it come up with `docker compose logs -f app`. It applies the database
 schema and checks its own configuration before serving anything, and refuses to
 start rather than start wrong — so any failure is explained in that log.
 
+## Install-time options
+
+Both go *after* the pipe, so they apply to the shell running the script rather than to
+`curl`:
+
+```bash
+# Install somewhere other than ~/armoryhub — use this on a NAS to keep the
+# database off a FUSE user share
+curl -fsSL https://armoryhub.app/install.sh | ARMORYHUB_DIR=/mnt/cache/appdata/armoryhub sh
+
+# Choose the name on your private network (default: armoryhub)
+curl -fsSL https://armoryhub.app/install.sh | ARMORYHUB_TS_HOSTNAME=armory sh
+```
+
+Certificates are rate-limited per hostname — five per week — so if you have reinstalled
+several times and HTTPS has stopped working, a fresh name gets a certificate
+immediately.
+
 ## HTTPS is required, not optional
 
 Browsers only allow the encryption ArmoryHub depends on over HTTPS or on
@@ -455,24 +473,6 @@ docker compose config --quiet          # exit 0 means the compose file is valid
 sudo du -sh data/*                     # what is using space (sudo: postgres is root-owned)
 docker exec -it $(docker ps -q -f name=armoryhub.*app) node reset-password.js
 ```
-
-**Install-time options**
-
-Both go *after* the pipe, so they apply to the shell running the script rather than to
-`curl`:
-
-```bash
-# Install somewhere other than ~/armoryhub — use this on a NAS to keep the
-# database off a FUSE user share
-curl -fsSL https://armoryhub.app/install.sh | ARMORYHUB_DIR=/mnt/cache/appdata/armoryhub sh
-
-# Choose the name on your private network (default: armoryhub)
-curl -fsSL https://armoryhub.app/install.sh | ARMORYHUB_TS_HOSTNAME=armory sh
-```
-
-Certificates are rate-limited per hostname — five per week — so if you have reinstalled
-several times and HTTPS has stopped working, a fresh name gets a certificate
-immediately.
 
 ---
 
