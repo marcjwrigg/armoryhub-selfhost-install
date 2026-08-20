@@ -415,9 +415,12 @@ say '  Create your account in the browser once HTTPS is up. You will set a passw
 say '  (to sign in) and a PIN (to decrypt your data) — different things. The password'
 say '  can be reset from this server. The PIN CANNOT, by anyone, including us.'
 say ''
-say '  Write your PIN down and keep it somewhere safe and offline. Also set up a'
-say '  recovery passphrase, which is what lets you add a new device later — but note'
-say '  it does NOT get you back in if you forget the PIN. You need both.'
+say '  Write your PIN down and keep it somewhere safe and offline.'
+say ''
+say '  A passphrase is optional. It gives the copy of your key held on this server'
+say '  much stronger protection than a 6-digit PIN can. If you set one, it is also'
+say '  required — together with your PIN — to set up any other device, so write both'
+say '  down. Neither can be recovered if you lose them.'
 say ''
 # Point people at the helper rather than at raw compose commands. Compose commands
 # with --profile break the moment a dashboard rewrites docker-compose.yml, and the

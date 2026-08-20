@@ -476,4 +476,4 @@ docker exec -it $(docker ps -q -f name=armoryhub.*app) node reset-password.js
 
 ---
 
-Version: `0.1.5`
+Version: `0.1.6`
