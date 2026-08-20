@@ -114,7 +114,6 @@ services:
       REALTIME_MODE: poll
       REALTIME_POLL_MS: "30000"
       LICENSE_FILE: /data/license.jwt
-      ENCRYPTION_AUTO_UNLOCK: "false"
       BACKUP_DIR: /data/backups
     volumes:
       - "./data/app:/data"

@@ -214,6 +214,28 @@ with CasaOS having no authority over the configuration.
 If you do let CasaOS manage it, keep a copy of the original compose file. CasaOS moves
 what it replaces to `docker-compose.yml.bak`, owned by root.
 
+### Working around it without a fight
+
+If you want to keep CasaOS managing the app, keep a second, pristine copy of the
+compose file under a name CasaOS does not touch, and use it for anything involving
+profiles:
+
+```bash
+cd ~/armoryhub
+curl -fsSL https://raw.githubusercontent.com/marcjwrigg/armoryhub-selfhost-install/main/docker-compose.yml   -o compose-full.yml
+
+docker compose -f compose-full.yml --profile tools run --rm --no-deps restore list
+docker compose -f compose-full.yml --profile tailscale up -d
+```
+
+The project name comes from the directory, so this attaches to the same containers,
+network and data as usual — it is the same stack, just described by a file CasaOS has
+not edited. `--no-deps` stops Compose recreating your database because the two files
+disagree.
+
+Symptom that tells you CasaOS has rewritten the file: `no such service: restore` or
+`no such service: tailscale`, while the containers are visibly running.
+
 ## Updating
 
 ```bash
