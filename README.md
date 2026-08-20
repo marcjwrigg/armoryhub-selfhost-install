@@ -345,7 +345,34 @@ forget your PIN, your records cannot be decrypted, passphrase or not.
 
 ## Useful commands
 
-Run these from your install directory (`~/armoryhub` unless you changed it).
+The installer sets up an `armoryhub` command. Use it in preference to `docker compose`:
+it reads Docker directly, so it keeps working even if a dashboard has rewritten your
+compose file.
+
+```bash
+armoryhub doctor            # check everything and say what is wrong
+armoryhub status            # what is running
+armoryhub logs [service]    # follow logs, default: app
+armoryhub url               # the address to open
+armoryhub backup list       # what backups exist
+armoryhub backup now        # take one immediately
+armoryhub backup verify latest
+armoryhub restore <stamp>   # asks for confirmation, stops and restarts the app
+armoryhub password          # reset the account password
+armoryhub update            # pull and restart
+```
+
+**`armoryhub doctor` is the one to run when something is wrong.** It checks the
+containers, whether the app answers, whether HTTPS actually works end to end, whether
+your compose file has been rewritten, whether the database is on storage that will
+corrupt it, free space, and backup age — and tells you what to do about each.
+
+If it was not installed to your PATH, it is in your install directory: `./armoryhub`.
+
+### Doing it with docker compose instead
+
+These work too, from your install directory (`~/armoryhub` unless you changed it).
+Anything with `--profile` will fail if a dashboard has rewritten the file.
 
 **Everyday**
 

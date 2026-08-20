@@ -1,0 +1,287 @@
+#!/bin/sh
+# ArmoryHub management helper.
+#
+#   armoryhub doctor          check everything and say what is wrong
+#   armoryhub status          what is running
+#   armoryhub logs [service]  follow logs (default: app)
+#   armoryhub url             print the address to open
+#   armoryhub backup list|now|verify [stamp]
+#   armoryhub restore <stamp>
+#   armoryhub password        reset the account password
+#   armoryhub update          pull and restart
+#
+# ## Why this exists rather than documenting docker compose commands
+#
+# The optional services — tailscale, restore, caddy — sit behind Compose profiles.
+# Dashboards that manage compose files by reconstructing them from their own model
+# drop what they cannot represent, and profiles are outside that model. CasaOS does
+# this: saving anything in its settings form rewrites docker-compose.yml, deleting
+# those three services. `docker compose --profile tools run --rm restore list` then
+# fails with "no such service: restore" while the containers are visibly running.
+#
+# So this script does not read docker-compose.yml. It finds the running containers,
+# takes their configuration from Docker itself, and launches what it needs directly.
+# A mangled compose file cannot break it.
+#
+# POSIX sh, no dependencies beyond docker and curl.
+set -eu
+
+DIR="${ARMORYHUB_DIR:-}"
+PROJECT="${ARMORYHUB_PROJECT:-armoryhub}"
+
+ok()   { printf '  \033[32m✓\033[0m %s\n' "$*"; }
+warn() { printf '  \033[33m!\033[0m %s\n' "$*"; WARNINGS=$((WARNINGS+1)); }
+bad()  { printf '  \033[31m✗\033[0m %s\n' "$*"; PROBLEMS=$((PROBLEMS+1)); }
+info() { printf '    %s\n' "$*"; }
+die()  { printf '\n  \033[31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
+
+WARNINGS=0
+PROBLEMS=0
+
+# --- locating the install ----------------------------------------------------
+# Derived from the running containers rather than assumed, so this works wherever
+# the operator installed it.
+container() { docker ps -q -f "label=com.docker.compose.project=$PROJECT" -f "name=$1" 2>/dev/null | head -1; }
+
+APP=$(container app || true)
+DB=$(container db || true)
+TS=$(container tailscale || true)
+
+if [ -z "$DIR" ] && [ -n "$APP" ]; then
+  DIR=$(docker inspect "$APP" --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' 2>/dev/null || true)
+fi
+[ -n "$DIR" ] || DIR="$HOME/armoryhub"
+
+# Read a variable out of the app container's environment. More reliable than parsing
+# .env, because this is what the process actually received.
+appenv() {
+  [ -n "$APP" ] || return 1
+  docker inspect "$APP" --format "{{range .Config.Env}}{{println .}}{{end}}" 2>/dev/null \
+    | sed -n "s/^$1=//p" | head -1
+}
+
+IMAGE=""
+[ -n "$APP" ] && IMAGE=$(docker inspect "$APP" --format '{{.Config.Image}}' 2>/dev/null || true)
+NETWORK="${PROJECT}_default"
+
+ts_domain() {
+  [ -n "$TS" ] || return 1
+  docker exec "$TS" tailscale status --json 2>/dev/null \
+    | grep -m1 '"DNSName"' | cut -d'"' -f4 | sed 's/\.$//'
+}
+
+# --- backup / restore --------------------------------------------------------
+# Runs the same image the app runs, with the same mounts the compose file would give
+# the restore service. No compose file involved, so profiles cannot be stripped away.
+backup_cmd() {
+  [ -n "$IMAGE" ] || die "ArmoryHub does not appear to be running. Try: armoryhub status"
+  ADMIN_URL=$(appenv DATABASE_ADMIN_URL || true)
+  if [ -z "$ADMIN_URL" ]; then
+    # The app runs as a non-owner role and has no admin URL; the backup sidecar does.
+    BK=$(container backup || true)
+    [ -n "$BK" ] && ADMIN_URL=$(docker inspect "$BK" --format "{{range .Config.Env}}{{println .}}{{end}}" \
+      | sed -n 's/^DATABASE_ADMIN_URL=//p' | head -1)
+  fi
+  [ -n "$ADMIN_URL" ] || die "Could not determine the database URL from the running containers."
+
+  # --entrypoint is required, not optional. The image's default entrypoint boots the
+  # app and validates DATABASE_URL first, so passing backup.sh as arguments just gets
+  # ignored and fails with "DATABASE_URL must be set". The compose restore service
+  # overrides entrypoint for the same reason.
+  docker run --rm -i --network "$NETWORK" \
+    --entrypoint /bin/sh \
+    -e DATABASE_ADMIN_URL="$ADMIN_URL" \
+    -e BACKUP_DIR=/backups -e FILES_DIR=/data/files \
+    -v "$DIR/data/app:/data" -v "$DIR/data/backups:/backups" \
+    "$IMAGE" /app/backup.sh "$@"
+}
+
+# --- doctor ------------------------------------------------------------------
+doctor() {
+  printf '\nArmoryHub doctor\n================\n\n'
+  printf '  install:  %s\n  project:  %s\n\n' "$DIR" "$PROJECT"
+
+  # 1. Containers
+  for svc in db app backup; do
+    if [ -n "$(container "$svc")" ]; then ok "$svc running"; else bad "$svc is NOT running"; fi
+  done
+  if [ -n "$TS" ]; then ok "tailscale running"
+  else warn "tailscale not running — fine if you use your own reverse proxy, otherwise your HTTPS address will not resolve"
+  fi
+
+  # 2. Compose file integrity. A rewritten file still leaves containers running, so
+  #    this is invisible until you next try to use a profile service.
+  if [ -f "$DIR/docker-compose.yml" ]; then
+    if grep -q '^  tailscale:' "$DIR/docker-compose.yml" 2>/dev/null; then
+      ok "docker-compose.yml looks intact"
+    else
+      warn "docker-compose.yml has been rewritten by a dashboard (CasaOS)"
+      info "the tailscale/restore/caddy services have been removed from it"
+      info "this script does not need them, but 'docker compose' commands will fail"
+      if [ -f "$DIR/docker-compose.yml.bak" ]; then
+        info "an intact copy is at docker-compose.yml.bak"
+      fi
+    fi
+    # grep -c prints 0 AND exits non-zero when there are no matches, so `|| echo 0`
+    # would append a second line and break the numeric test.
+    DOLLARS=$(grep -c '\$\$' "$DIR/docker-compose.yml" 2>/dev/null || true)
+    if [ "${DOLLARS:-0}" -eq 0 ]; then
+      warn "escaping in docker-compose.yml has been altered (\$\$ became \$)"
+      info "harmless now, but a NEW install from this file would fail to create the database"
+    fi
+  else
+    warn "no docker-compose.yml at $DIR"
+  fi
+
+  # 3. App reachable on loopback
+  PORT=$(appenv APP_PORT || echo "")
+  [ -n "$PORT" ] || PORT=8477
+  HOSTPORT=$(docker port "$APP" 3000 2>/dev/null | head -1 | sed 's/.*://' || true)
+  [ -n "$HOSTPORT" ] && PORT="$HOSTPORT"
+  if [ -n "$APP" ] && curl -fsS -o /dev/null -m 10 "http://127.0.0.1:$PORT/api/selfhost/auth/status" 2>/dev/null; then
+    ok "app answering on 127.0.0.1:$PORT"
+  else
+    bad "app not answering on 127.0.0.1:$PORT"
+    info "see why:  armoryhub logs"
+  fi
+
+  # 4. HTTPS. This is the one that presents as a blank page with an empty console.
+  if [ -n "$TS" ]; then
+    NAME=$(ts_domain || true)
+    if [ -z "$NAME" ]; then
+      warn "tailscale has not registered yet"
+      info "approve the machine using the link in:  armoryhub logs tailscale"
+    else
+      ok "tailscale address: https://$NAME"
+      if docker exec "$TS" wget -q -T 12 -O /dev/null "https://$NAME/api/selfhost/auth/status" 2>/dev/null; then
+        ok "HTTPS working end to end"
+      else
+        RATE=$(docker logs "$TS" 2>&1 | grep -oE 'too many certificates.*retry after [0-9: -]+UTC' | tail -1 || true)
+        if [ -n "$RATE" ]; then
+          bad "HTTPS blocked by a certificate rate limit"
+          info "$RATE"
+          info "the limit is per hostname; reinstall with a different one to get a certificate now:"
+          info "  curl -fsSL https://armoryhub.app/install.sh | ARMORYHUB_TS_HOSTNAME=armory2 sh"
+        else
+          bad "HTTPS not working — this looks like a blank page in a browser"
+          info "real error:  docker exec $TS tailscale cert $NAME"
+        fi
+      fi
+    fi
+  fi
+
+  # 5. Storage. Postgres on FUSE or a network share corrupts slowly and blames itself.
+  if [ -d "$DIR/data/postgres" ]; then
+    FS=$(stat -f -c %T "$DIR/data/postgres" 2>/dev/null || echo unknown)
+    case "$FS" in
+      fuse*|shfs|nfs*|smb*|cifs*)
+        bad "database is on $FS storage"
+        info "Postgres on FUSE or a network share risks locking errors and corruption"
+        info "move the install to local storage, e.g. /mnt/cache/appdata/armoryhub on Unraid" ;;
+      unknown) warn "could not determine the filesystem under data/postgres" ;;
+      *) ok "database on local storage ($FS)" ;;
+    esac
+  fi
+
+  # 6. Free space
+  AVAIL=$(df -Pk "$DIR" 2>/dev/null | awk 'NR==2{print int($4/1024)}' || echo 0)
+  if [ "$AVAIL" -lt 1024 ]; then bad "only ${AVAIL}MB free at $DIR"
+  elif [ "$AVAIL" -lt 5120 ]; then warn "${AVAIL}MB free at $DIR"
+  else ok "$((AVAIL/1024))GB free"; fi
+
+  # 7. Backups: existence is not the point, recency is.
+  if [ -d "$DIR/data/backups" ]; then
+    NEWEST=$(ls -1t "$DIR/data/backups" 2>/dev/null | head -1 || true)
+    COUNT=$(ls -1 "$DIR/data/backups" 2>/dev/null | wc -l | tr -d ' ')
+    if [ -z "$NEWEST" ]; then
+      warn "no backups yet — one runs nightly, or force one with:  armoryhub backup now"
+    else
+      AGE=$(( ( $(date +%s) - $(date -r "$DIR/data/backups/$NEWEST" +%s 2>/dev/null || echo 0) ) / 86400 ))
+      if [ "$AGE" -gt 2 ]; then warn "newest backup is ${AGE} days old ($COUNT total)"
+      else ok "backups current — newest ${AGE}d old, $COUNT total"; fi
+      info "these live on the same disk as your data; copy them elsewhere"
+    fi
+  fi
+
+  # 8. Compose version, for whoever still uses compose directly
+  CV=$(docker compose version --short 2>/dev/null | tr -d 'v' || echo "")
+  if [ -n "$CV" ]; then
+    MAJ=${CV%%.*}; REST=${CV#*.}; MIN=${REST%%.*}
+    if [ "$MAJ" -gt 2 ] 2>/dev/null || { [ "$MAJ" -eq 2 ] && [ "$MIN" -ge 23 ]; } 2>/dev/null; then
+      ok "docker compose $CV"
+    else
+      warn "docker compose $CV is older than 2.23 — a fresh install would fail"
+    fi
+  fi
+
+  printf '\n'
+  if [ "$PROBLEMS" -gt 0 ]; then
+    printf '  \033[31m%s problem(s)\033[0m, %s warning(s)\n\n' "$PROBLEMS" "$WARNINGS"; exit 1
+  elif [ "$WARNINGS" -gt 0 ]; then
+    printf '  no problems, %s warning(s)\n\n' "$WARNINGS"
+  else
+    printf '  \033[32meverything looks healthy\033[0m\n\n'
+  fi
+}
+
+# --- commands ----------------------------------------------------------------
+CMD="${1:-doctor}"; [ $# -gt 0 ] && shift
+
+case "$CMD" in
+  doctor) doctor ;;
+
+  status)
+    docker ps -a --filter "label=com.docker.compose.project=$PROJECT" \
+      --format 'table {{.Names}}\t{{.Status}}' ;;
+
+  logs)
+    SVC="${1:-app}"
+    C=$(container "$SVC") || true
+    [ -n "$C" ] || die "no running container for '$SVC'"
+    docker logs -f --tail 100 "$C" ;;
+
+  url)
+    NAME=$(ts_domain || true)
+    if [ -n "$NAME" ]; then echo "https://$NAME"
+    else
+      appenv APP_URL || echo "http://localhost:8477"
+    fi ;;
+
+  backup)
+    SUB="${1:-list}"; [ $# -gt 0 ] && shift
+    case "$SUB" in
+      list)   backup_cmd list ;;
+      now)    backup_cmd once ;;
+      verify) backup_cmd verify "${1:-latest}" ;;
+      *)      die "usage: armoryhub backup list|now|verify [stamp]" ;;
+    esac ;;
+
+  restore)
+    [ $# -ge 1 ] || die "usage: armoryhub restore <stamp>   (see: armoryhub backup list)"
+    printf '  This REPLACES your current data with backup %s.\n' "$1"
+    printf '  Type yes to continue: '
+    read -r reply
+    [ "$reply" = "yes" ] || die "cancelled"
+    [ -n "$APP" ] && docker stop "$APP" >/dev/null && echo "  app stopped"
+    backup_cmd restore "$1"
+    [ -n "$APP" ] && docker start "$APP" >/dev/null && echo "  app started" ;;
+
+  password)
+    [ -n "$APP" ] || die "app is not running"
+    docker exec -it "$APP" node reset-password.js ;;
+
+  update)
+    [ -d "$DIR" ] || die "install not found at $DIR"
+    cd "$DIR"
+    docker compose pull
+    docker compose down --remove-orphans
+    docker compose up -d
+    echo
+    echo "  If tailscale did not come back, your compose file has been rewritten."
+    echo "  Run 'armoryhub doctor' to confirm." ;;
+
+  -h|--help|help)
+    sed -n '3,12p' "$0" | sed 's/^# \{0,1\}//' ;;
+
+  *) die "unknown command '$CMD' — try: armoryhub help" ;;
+esac

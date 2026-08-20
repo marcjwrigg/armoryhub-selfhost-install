@@ -149,6 +149,22 @@ if ! docker run --rm -v "$DIR/data:/d" alpine:latest \
 fi
 ok 'created ./data (postgres, app, backups, tailscale) — readable by you'
 
+# --- management helper --------------------------------------------------------
+# Everything the operator needs afterwards goes through this rather than through
+# `docker compose`, because dashboards that rewrite the compose file strip the
+# profile-gated services and break those commands. The helper reads Docker directly.
+curl -fsSL "$RAW/armoryhub" -o armoryhub 2>/dev/null && chmod +x armoryhub || warn 'could not download the armoryhub helper'
+if [ -f armoryhub ]; then
+  if [ -w /usr/local/bin ] && cp armoryhub /usr/local/bin/armoryhub 2>/dev/null; then
+    ok 'installed the `armoryhub` command'
+  elif sudo -n cp armoryhub /usr/local/bin/armoryhub 2>/dev/null; then
+    sudo -n chmod +x /usr/local/bin/armoryhub 2>/dev/null || true
+    ok 'installed the `armoryhub` command'
+  else
+    ok "helper saved to $DIR/armoryhub (run it as ./armoryhub)"
+  fi
+fi
+
 # --- start -------------------------------------------------------------------
 say ''
 say '  Pulling and starting (first run downloads ~150 MB)...'
