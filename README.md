@@ -317,6 +317,69 @@ against losing a device, not against forgetting your PIN.
 So: **write your PIN down too**, and keep both somewhere safe and offline. If you
 forget your PIN, your records cannot be decrypted, passphrase or not.
 
+## Useful commands
+
+Run these from your install directory (`~/armoryhub` unless you changed it).
+
+**Everyday**
+
+```bash
+docker compose ps                      # expect four: app, db, backup, tailscale
+docker compose logs -f app             # what the app is doing, live
+docker compose restart app             # after an .env change
+docker compose images app              # which version is actually running
+```
+
+**HTTPS and Tailscale**
+
+```bash
+docker compose exec tailscale tailscale status         # is the node connected?
+docker compose exec tailscale tailscale serve status   # is it proxying to the app?
+docker compose exec tailscale tailscale cert <your-full-domain>   # force a certificate
+docker compose logs tailscale | grep -i cert           # why a certificate failed
+```
+
+`tailscale cert` is the one to reach for when the page is blank: it prints the real
+error, where the browser just shows you nothing.
+
+**Backups**
+
+```bash
+docker compose --profile tools run --rm restore list
+docker compose --profile tools run --rm restore once
+docker compose --profile tools run --rm restore verify latest
+
+docker compose stop app
+docker compose --profile tools run --rm restore restore <stamp>
+docker compose start app
+```
+
+**Diagnosing**
+
+```bash
+docker compose config --quiet          # exit 0 means the compose file is valid
+sudo du -sh data/*                     # what is using space (sudo: postgres is root-owned)
+docker exec -it $(docker ps -q -f name=armoryhub.*app) node reset-password.js
+```
+
+**Install-time options**
+
+Both go *after* the pipe, so they apply to the shell running the script rather than to
+`curl`:
+
+```bash
+# Install somewhere other than ~/armoryhub — use this on a NAS to keep the
+# database off a FUSE user share
+curl -fsSL https://armoryhub.app/install.sh | ARMORYHUB_DIR=/mnt/cache/appdata/armoryhub sh
+
+# Choose the name on your private network (default: armoryhub)
+curl -fsSL https://armoryhub.app/install.sh | ARMORYHUB_TS_HOSTNAME=armory sh
+```
+
+Certificates are rate-limited per hostname — five per week — so if you have reinstalled
+several times and HTTPS has stopped working, a fresh name gets a certificate
+immediately.
+
 ---
 
 Version: `0.1.5`
