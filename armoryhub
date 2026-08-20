@@ -216,12 +216,32 @@ doctor() {
 
   printf '\n'
   if [ "$PROBLEMS" -gt 0 ]; then
-    printf '  \033[31m%s problem(s)\033[0m, %s warning(s)\n\n' "$PROBLEMS" "$WARNINGS"; exit 1
+    printf '  \033[31m%s problem(s)\033[0m, %s warning(s)\n' "$PROBLEMS" "$WARNINGS"
   elif [ "$WARNINGS" -gt 0 ]; then
-    printf '  no problems, %s warning(s)\n\n' "$WARNINGS"
+    printf '  no problems, %s warning(s)\n' "$WARNINGS"
   else
-    printf '  \033[32meverything looks healthy\033[0m\n\n'
+    printf '  \033[32meverything looks healthy\033[0m\n'
   fi
+
+  # Printed every time on purpose. doctor is what people run when something is wrong,
+  # which is exactly the moment they should not have to go and find the README.
+  cat <<'CMDS'
+
+  Commands
+    armoryhub doctor              this check
+    armoryhub status              what is running
+    armoryhub logs [service]      follow logs (app, db, tailscale, backup)
+    armoryhub url                 the address to open
+    armoryhub backup list         what backups exist
+    armoryhub backup now          take one immediately
+    armoryhub backup verify latest
+    armoryhub restore <stamp>     replace data with a backup (confirms first)
+    armoryhub password            reset the account password
+    armoryhub update              pull the latest version and restart
+
+CMDS
+  [ "$PROBLEMS" -gt 0 ] && exit 1
+  return 0
 }
 
 # --- commands ----------------------------------------------------------------

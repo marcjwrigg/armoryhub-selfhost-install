@@ -155,13 +155,14 @@ ok 'created ./data (postgres, app, backups, tailscale) — readable by you'
 # profile-gated services and break those commands. The helper reads Docker directly.
 curl -fsSL "$RAW/armoryhub" -o armoryhub 2>/dev/null && chmod +x armoryhub || warn 'could not download the armoryhub helper'
 if [ -f armoryhub ]; then
-  if [ -w /usr/local/bin ] && cp armoryhub /usr/local/bin/armoryhub 2>/dev/null; then
+  # Only the no-prompt paths here. If neither works we ask at the end, once the
+  # install has succeeded, rather than interrupting it for a password.
+  if [ -w /usr/local/bin ] && install -m 755 armoryhub /usr/local/bin/armoryhub 2>/dev/null; then
     ok 'installed the `armoryhub` command'
-  elif sudo -n cp armoryhub /usr/local/bin/armoryhub 2>/dev/null; then
-    sudo -n chmod +x /usr/local/bin/armoryhub 2>/dev/null || true
+  elif sudo -n install -m 755 armoryhub /usr/local/bin/armoryhub 2>/dev/null; then
     ok 'installed the `armoryhub` command'
   else
-    ok "helper saved to $DIR/armoryhub (run it as ./armoryhub)"
+    ok "management helper saved to $DIR/armoryhub"
   fi
 fi
 
@@ -221,49 +222,84 @@ while [ "$i" -lt 20 ]; do
   i=$((i + 1)); sleep 2
 done
 
-# Either an auth URL (no key) or successful registration (key present).
-AUTH_URL=""
+# Approving the machine is a race, and the installer has to run it rather than hope.
+#
+# While a node sits unauthenticated, the tailscale container re-registers itself about
+# once a minute (measured on a test machine: five regenerations, ~60s apart). Every
+# re-registration mints a new node key and a NEW approval link, silently invalidating
+# the one already on screen. Anyone who reads the message, then goes to find their
+# password manager, misses the window — and the symptom is an approval link that
+# simply does nothing, followed by a node in the admin console whose "last seen"
+# equals its creation time.
+#
+# So: print the link, watch for it to change, and reprint it when it does.
+
+ts_field() {
+  [ -n "$TS_CONTAINER" ] || return 1
+  docker exec "$TS_CONTAINER" tailscale status --json 2>/dev/null \
+    | grep -m1 "\"$1\"" | cut -d'"' -f4
+}
+
+APPROVE_WINDOW=75   # the link lives ~60s; allow a buffer before assuming it rotated
+APPROVE_ROUNDS=5    # give up after ~6 minutes and explain the auth-key path
 TS_NAME=""
-printf '  Waiting for Tailscale'
-i=0
-while [ "$i" -lt 40 ]; do
-  if [ -n "$TS_CONTAINER" ]; then
-    AUTH_URL=$(docker logs "$TS_CONTAINER" 2>&1 | grep -oE 'https://login\.tailscale\.com/a/[a-z0-9]+' | tail -1 || true)
-    TS_NAME=$(docker exec "$TS_CONTAINER" tailscale status --json 2>/dev/null \
-      | grep -m1 '"DNSName"' | cut -d'"' -f4 | sed 's/\.$//' || true)
+LAST_URL=""
+round=1
+
+say ''
+while [ "$round" -le "$APPROVE_ROUNDS" ]; do
+  STATE=$(ts_field BackendState || true)
+
+  if [ "$STATE" = "Running" ]; then
+    TS_NAME=$(ts_field DNSName | sed 's/\.$//' || true)
+    break
   fi
-  [ -n "$AUTH_URL" ] && break
-  [ -n "$TS_NAME" ] && break
-  printf '.'
-  i=$((i + 1)); sleep 3
+
+  URL=$(ts_field AuthURL || true)
+  if [ -n "$URL" ] && [ "$URL" != "$LAST_URL" ]; then
+    LAST_URL="$URL"
+    say '  ============================================================'
+    if [ "$round" -eq 1 ]; then
+      say '   ONE STEP LEFT — approve this machine:'
+    else
+      say "   That link expired. Here is a fresh one (attempt $round):"
+    fi
+    say ''
+    say "     $URL"
+    say ''
+    say '   This link is only valid for about a minute. If you miss it, leave this'
+    say '   running — a new one is printed automatically.'
+    say '  ============================================================'
+  fi
+
+  # Poll inside the window so approval is noticed within seconds, not at the end.
+  waited=0
+  while [ "$waited" -lt "$APPROVE_WINDOW" ]; do
+    sleep 5
+    waited=$((waited + 5))
+    if [ "$(ts_field BackendState || true)" = "Running" ]; then break; fi
+  done
+
+  round=$((round + 1))
 done
-printf '\n'
 
 say ''
 if [ -n "$TS_NAME" ]; then
-  ok 'Tailscale registered automatically (auth key supplied)'
-  say ''
-  say '  ============================================================'
-  say "   Open:  https://$TS_NAME"
-  say '  ============================================================'
-elif [ -n "$AUTH_URL" ]; then
-  say '  ============================================================'
-  say '   ONE STEP LEFT — approve this machine:'
-  say ''
-  say "     $AUTH_URL"
-  say ''
-  say '   Sign in, approve it, and your instance will be live at'
-  say '   https://armoryhub.<your-tailnet>.ts.net'
-  say '  ============================================================'
-  say ''
-  say '  Approve it promptly. While the machine sits unauthenticated the container'
-  say '  re-registers periodically, and that invalidates the link above.'
-  say ''
-  say '  The current link, whenever you need it:'
-  say "    docker exec \$(docker ps -q -f name=tailscale) tailscale status"
+  ok "Tailscale approved: $TS_NAME"
 else
-  warn 'Tailscale did not report an auth URL in time.'
-  say "  Check with:  cd $DIR && docker compose logs tailscale"
+  warn 'The machine was not approved in time.'
+  say ''
+  say '  Nothing is broken — the app is running, it just has no HTTPS address yet.'
+  say '  Get the current link any time with:'
+  say "    docker exec \$(docker ps -q -f name=tailscale) tailscale status"
+  say ''
+  say '  If you keep missing the window, use an auth key instead. It authenticates'
+  say '  on boot, so there is no link and no timing to get right:'
+  say ''
+  say '    1. Create a REUSABLE, non-ephemeral key at'
+  say '       https://login.tailscale.com/admin/settings/keys'
+  say "    2. echo 'TS_AUTHKEY=tskey-auth-...' >> $DIR/.env"
+  say "    3. cd $DIR && docker rm -f \$(docker ps -q -f name=tailscale) && docker compose up -d"
 fi
 
 # Wait for the certificate, and say what went wrong if it does not arrive.
@@ -371,6 +407,43 @@ if [ -x /usr/local/bin/armoryhub ]; then
   AH='armoryhub'
 else
   AH="$DIR/armoryhub"
+fi
+
+# Offer to put the helper on PATH, now that everything else has worked.
+#
+# read must come from /dev/tty, not stdin. The documented install is
+# `curl ... | sh`, which means stdin IS the script — a bare `read` would consume the
+# next lines of the installer instead of waiting for the operator, and the rest of the
+# script would silently vanish. If there is no tty at all (unattended install), skip
+# the question rather than hanging forever.
+# Probe the terminal by opening it, rather than testing [ -r /dev/tty ]. The file can
+# exist and pass that test while still being unusable when the script is piped, which
+# prints "Device not configured" after the question is already on screen.
+TTY_OK=""
+if { exec 3</dev/tty; } 2>/dev/null; then TTY_OK=yes; fi
+
+if [ -f "$DIR/armoryhub" ] && [ ! -x /usr/local/bin/armoryhub ] && [ -n "$TTY_OK" ]; then
+  say ''
+  printf '  Install the `armoryhub` command to /usr/local/bin? Needs sudo. [Y/n] '
+  ANS=''
+  read -r ANS <&3 || ANS=n
+  case "$ANS" in
+    ''|y|Y|yes|YES|Yes)
+      if sudo install -m 755 "$DIR/armoryhub" /usr/local/bin/armoryhub </dev/tty; then
+        ok 'installed — run `armoryhub doctor` from anywhere'
+      else
+        warn "not installed; run it as $DIR/armoryhub"
+      fi ;;
+    *)
+      say "  Skipped. Run it as $DIR/armoryhub, or later:"
+      say "    sudo install -m 755 $DIR/armoryhub /usr/local/bin/armoryhub" ;;
+  esac
+  say ''
+elif [ -f "$DIR/armoryhub" ] && [ ! -x /usr/local/bin/armoryhub ]; then
+  say ''
+  say '  To run `armoryhub` from anywhere:'
+  say "    sudo install -m 755 $DIR/armoryhub /usr/local/bin/armoryhub"
+  say ''
 fi
 
 say '  Useful commands:'
