@@ -206,189 +206,7 @@ curl -fsSL https://armoryhub.app/install.sh | ARMORYHUB_DIR=/mnt/cache/appdata/a
 Note the variable goes **after** the pipe, so it applies to the shell running the
 script rather than to `curl`.
 
-## Installing it as an app on your phone and computer
-
-ArmoryHub installs to your home screen or dock and then behaves like any other app —
-its own icon, its own window, no browser chrome. There is nothing to download from an
-app store.
-
-**First, on each device you want to use it from:** install Tailscale from your app
-store, sign in to the same account, and make sure it is connected. Your instance
-lives on your private network, so the address only resolves while Tailscale is on. If
-the page will not load, that is almost always the reason.
-
-Then open `https://armoryhub.<your-tailnet>.ts.net` and:
-
-**iPhone or iPad** — use **Safari**. Tap the Share button (the square with an arrow
-pointing up), scroll down, tap **Add to Home Screen**, then **Add**. Other browsers
-on iOS can make a shortcut, but only Safari installs it as a real app.
-
-**Android** — use **Chrome**. Tap the three-dot menu, then **Install app** (some
-versions say *Add to Home screen*), then confirm.
-
-**Windows or Linux desktop** — in **Chrome** or **Edge**, click the install icon at
-the right-hand end of the address bar, then **Install**. If you do not see it, the
-three-dot menu has the same option.
-
-**Mac** — in **Safari**, choose **File → Add to Dock**. In Chrome or Edge, use the
-install icon in the address bar as above.
-
-Launch it from your home screen or dock afterwards. It keeps you signed in, so you
-only need your PIN. Remember that Tailscale has to be connected for it to load —
-worth knowing before you rely on it at a range with no signal.
-
-## Running under CasaOS, Portainer or Dockge
-
-The compose file works in any of them, but **CasaOS rewrites it when you save
-anything through its settings form**, including when you set the Web UI address.
-Measured on a real install, saving once:
-
-- **removes the `tailscale`, `restore` and `caddy` services**, because CasaOS does
-  not understand Compose profiles and drops what it cannot model. Containers already
-  running keep running, so nothing appears wrong — but `docker compose` can no longer
-  start or restart Tailscale, and reports `no such service: tailscale`.
-- **converts `$$` to `$`**, so the embedded database setup would run with an empty
-  username on a fresh install.
-- **copies your passwords out of `.env` into the compose file**, which is
-  world-readable, while `.env` is not.
-
-None of that breaks a running instance, which is why it goes unnoticed. It bites
-later, when something needs restarting.
-
-**The safest arrangement is to run this from a terminal** and, if you want a tile on
-the CasaOS dashboard, add it as an **external link** to your `https://...ts.net`
-address rather than importing the compose file. You get the icon and the click-through
-with CasaOS having no authority over the configuration.
-
-If you do let CasaOS manage it, keep a copy of the original compose file. CasaOS moves
-what it replaces to `docker-compose.yml.bak`, owned by root.
-
-### Working around it without a fight
-
-If you want to keep CasaOS managing the app, keep a second, pristine copy of the
-compose file under a name CasaOS does not touch, and use it for anything involving
-profiles:
-
-```bash
-cd ~/armoryhub
-curl -fsSL https://raw.githubusercontent.com/marcjwrigg/armoryhub-selfhost-install/main/docker-compose.yml   -o compose-full.yml
-
-docker compose -f compose-full.yml --profile tools run --rm --no-deps restore list
-docker compose -f compose-full.yml --profile tailscale up -d
-```
-
-The project name comes from the directory, so this attaches to the same containers,
-network and data as usual — it is the same stack, just described by a file CasaOS has
-not edited. `--no-deps` stops Compose recreating your database because the two files
-disagree.
-
-Symptom that tells you CasaOS has rewritten the file: `no such service: restore` or
-`no such service: tailscale`, while the containers are visibly running.
-
-## Updating
-
-```bash
-docker compose pull
-docker compose down
-docker compose up -d
-docker compose ps          # expect: app, db, backup, tailscale
-```
-
-Use `down` then `up`, **not** `up -d` alone. Some Docker Compose versions replace
-a container by renaming the old one and can leave it running, silently continuing
-to serve the previous version.
-
-Database changes apply automatically on start. A backup is taken first and the
-upgrade aborts if that backup fails.
-
-### If your HTTPS address stops working after an upgrade
-
-Check `docker compose ps` includes **tailscale**. If it does not, that is why: the
-address resolves to nothing, which in a browser looks like a blank page with an empty
-console rather than an error.
-
-Tailscale is an optional service, so it only starts when Compose is told to include
-it. Once it has stopped for any reason, a plain `up -d` leaves it down.
-
-```bash
-grep COMPOSE_PROFILES .env || echo 'COMPOSE_PROFILES=tailscale' >> .env
-docker compose up -d
-```
-
-That line makes every future `up -d` include it. Installs created by `install.sh`
-have it already. Set it to `caddy` instead if you use a public domain.
-
-## Uninstalling
-
-```bash
-# Sign out of Tailscale FIRST, or a future reinstall appears as armoryhub-1
-docker compose exec tailscale tailscale logout
-
-docker compose --profile tailscale --profile tools down
-```
-
-That stops and removes the containers. **Your data is still there**, in the `data`
-directory next to `docker-compose.yml`, and `docker compose up -d` brings it all
-back.
-
-To delete your data as well, remove that directory yourself:
-
-```bash
-rm -rf ./data
-```
-
-There is no undo, and that includes your backups. Copy anything you want to keep off
-the machine first.
-
-## Backups
-
-A nightly backup runs automatically and keeps 7 daily plus 4 weekly copies.
-
-```bash
-docker compose --profile tools run --rm restore list
-docker compose --profile tools run --rm restore once
-docker compose --profile tools run --rm restore verify latest
-```
-
-To restore, stop the app first:
-
-```bash
-docker compose stop app
-docker compose --profile tools run --rm restore restore <stamp>
-docker compose start app
-```
-
-**Test a restore before you rely on one.** Backups are written to `./data/backups`
-as ordinary files, so copy them off this machine periodically — a backup on the same
-disk does not survive that disk failing. Their contents are already encrypted, so
-cloud storage is low-risk.
-
-## Two different secrets
-
-| | Protects | Recoverable? |
-|---|---|---|
-| **Password** | signing in | **Yes** |
-| **PIN** | your data | **No. Never.** |
-| **Passphrase** | your data on a new device | **No. Never.** |
-
-Reset a forgotten password from the server, from any directory:
-
-```bash
-docker exec -it $(docker ps -q -f name=armoryhub.*app) node reset-password.js
-```
-
-**Your PIN cannot be reset or recovered by anyone, including us, and the passphrase
-is not a way around that.** Neither ever leaves your device in a usable form, which
-is what makes the encryption meaningful.
-
-The two are not alternatives. The passphrase exists so you can set ArmoryHub up on a
-**new device** — you enter the passphrase, then your existing PIN. It is insurance
-against losing a device, not against forgetting your PIN.
-
-So: **write your PIN down too**, and keep both somewhere safe and offline. If you
-forget your PIN, your records cannot be decrypted, passphrase or not.
-
-## Useful commands
+## The armoryhub command
 
 The installer sets up an `armoryhub` command. Use it in preference to `docker compose`:
 it reads Docker directly, so it keeps working even if a dashboard has rewritten your
@@ -473,6 +291,187 @@ docker compose config --quiet          # exit 0 means the compose file is valid
 sudo du -sh data/*                     # what is using space (sudo: postgres is root-owned)
 docker exec -it $(docker ps -q -f name=armoryhub.*app) node reset-password.js
 ```
+
+## Updating
+
+```bash
+armoryhub update
+```
+
+That pulls the new image, restarts everything, and updates the `armoryhub` command
+itself. A backup is taken before any database changes are applied, and the upgrade
+aborts if that backup fails.
+
+Check afterwards with `armoryhub doctor`.
+
+### If your HTTPS address stops working after an upgrade
+
+Check `docker compose ps` includes **tailscale**. If it does not, that is why: the
+address resolves to nothing, which in a browser looks like a blank page with an empty
+console rather than an error.
+
+Tailscale is an optional service, so it only starts when Compose is told to include
+it. Once it has stopped for any reason, a plain `up -d` leaves it down.
+
+```bash
+grep COMPOSE_PROFILES .env || echo 'COMPOSE_PROFILES=tailscale' >> .env
+docker compose up -d
+```
+
+That line makes every future `up -d` include it. Installs created by `install.sh`
+have it already. Set it to `caddy` instead if you use a public domain.
+
+## Backups
+
+A nightly backup runs automatically and keeps 7 daily plus 4 weekly copies.
+
+```bash
+armoryhub backup list
+armoryhub backup now
+armoryhub backup verify latest
+```
+
+To restore — this replaces your current data, and asks you to confirm first:
+
+```bash
+armoryhub restore <stamp>
+```
+
+**Test a restore before you rely on one.** Backups are written to `./data/backups` as
+ordinary files, so copy them off this machine periodically — a backup on the same disk
+does not survive that disk failing. Their contents are already encrypted, so cloud
+storage is low-risk.
+
+## Uninstalling
+
+```bash
+# Sign out of Tailscale FIRST, or a future reinstall appears as armoryhub-1
+docker compose exec tailscale tailscale logout
+
+docker compose --profile tailscale --profile tools down
+```
+
+That stops and removes the containers. **Your data is still there**, in the `data`
+directory next to `docker-compose.yml`, and `docker compose up -d` brings it all
+back.
+
+To delete your data as well, remove that directory yourself:
+
+```bash
+rm -rf ./data
+```
+
+There is no undo, and that includes your backups. Copy anything you want to keep off
+the machine first.
+
+## Your password, PIN and passphrase
+
+| | Protects | Required? | Recoverable? |
+|---|---|---|---|
+| **Password** | signing in | yes | **Yes** |
+| **PIN** | decrypting your data | always | **No. Never.** |
+| **Passphrase** | the copy of your key held on this server | optional | **No. Never.** |
+
+Reset a forgotten password:
+
+```bash
+armoryhub password
+```
+
+**Your PIN decrypts your data, and nobody can reset or recover it — including us.** It
+never leaves your device in a usable form, which is what makes the encryption
+meaningful. Forget it and your records are permanently unreadable.
+
+**A passphrase is optional, and it is not a backup for the PIN.** What it does is raise
+the entropy of the key material this server holds. Without one, the copy stored here is
+protected by a six-digit PIN, which is weak against anyone who obtains the database.
+With one, the server holds a copy protected by something far stronger.
+
+If you set a passphrase, it is also required — **together with your PIN** — to set up
+ArmoryHub on another device. That follows from where the key is protected; it is not
+the reason for having one.
+
+So: write your PIN down, write your passphrase down if you set one, and keep both
+somewhere safe and offline.
+## Installing it as an app on your phone and computer
+
+ArmoryHub installs to your home screen or dock and then behaves like any other app —
+its own icon, its own window, no browser chrome. There is nothing to download from an
+app store.
+
+**First, on each device you want to use it from:** install Tailscale from your app
+store, sign in to the same account, and make sure it is connected. Your instance
+lives on your private network, so the address only resolves while Tailscale is on. If
+the page will not load, that is almost always the reason.
+
+Then open `https://armoryhub.<your-tailnet>.ts.net` and:
+
+**iPhone or iPad** — use **Safari**. Tap the Share button (the square with an arrow
+pointing up), scroll down, tap **Add to Home Screen**, then **Add**. Other browsers
+on iOS can make a shortcut, but only Safari installs it as a real app.
+
+**Android** — use **Chrome**. Tap the three-dot menu, then **Install app** (some
+versions say *Add to Home screen*), then confirm.
+
+**Windows or Linux desktop** — in **Chrome** or **Edge**, click the install icon at
+the right-hand end of the address bar, then **Install**. If you do not see it, the
+three-dot menu has the same option.
+
+**Mac** — in **Safari**, choose **File → Add to Dock**. In Chrome or Edge, use the
+install icon in the address bar as above.
+
+Launch it from your home screen or dock afterwards. It keeps you signed in, so you
+only need your PIN. Remember that Tailscale has to be connected for it to load —
+worth knowing before you rely on it at a range with no signal.
+
+## Running under CasaOS, Portainer or Dockge
+
+The compose file works in any of them, but **CasaOS rewrites it when you save
+anything through its settings form**, including when you set the Web UI address.
+Measured on a real install, saving once:
+
+- **removes the `tailscale`, `restore` and `caddy` services**, because CasaOS does
+  not understand Compose profiles and drops what it cannot model. Containers already
+  running keep running, so nothing appears wrong — but `docker compose` can no longer
+  start or restart Tailscale, and reports `no such service: tailscale`.
+- **converts `$$` to `$`**, so the embedded database setup would run with an empty
+  username on a fresh install.
+- **copies your passwords out of `.env` into the compose file**, which is
+  world-readable, while `.env` is not.
+
+None of that breaks a running instance, which is why it goes unnoticed. It bites
+later, when something needs restarting.
+
+**The safest arrangement is to run this from a terminal** and, if you want a tile on
+the CasaOS dashboard, add it as an **external link** to your `https://...ts.net`
+address rather than importing the compose file. You get the icon and the click-through
+with CasaOS having no authority over the configuration.
+
+If you do let CasaOS manage it, keep a copy of the original compose file. CasaOS moves
+what it replaces to `docker-compose.yml.bak`, owned by root.
+
+### Working around it without a fight
+
+If you want to keep CasaOS managing the app, keep a second, pristine copy of the
+compose file under a name CasaOS does not touch, and use it for anything involving
+profiles:
+
+```bash
+cd ~/armoryhub
+curl -fsSL https://raw.githubusercontent.com/marcjwrigg/armoryhub-selfhost-install/main/docker-compose.yml   -o compose-full.yml
+
+docker compose -f compose-full.yml --profile tools run --rm --no-deps restore list
+docker compose -f compose-full.yml --profile tailscale up -d
+```
+
+The project name comes from the directory, so this attaches to the same containers,
+network and data as usual — it is the same stack, just described by a file CasaOS has
+not edited. `--no-deps` stops Compose recreating your database because the two files
+disagree.
+
+Symptom that tells you CasaOS has rewritten the file: `no such service: restore` or
+`no such service: tailscale`, while the containers are visibly running.
+
 
 ---
 
