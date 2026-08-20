@@ -112,7 +112,7 @@ services:
       STORAGE_DRIVER: fs
       STORAGE_PATH: /data/files
       REALTIME_MODE: poll
-      REALTIME_POLL_MS: "30000"
+      REALTIME_POLL_MS: "${REALTIME_POLL_MS:-30000}"
       LICENSE_FILE: /data/license.jwt
       BACKUP_DIR: /data/backups
     volumes:
