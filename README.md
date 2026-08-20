@@ -91,24 +91,28 @@ If you own a domain and want a public URL instead, see the Caddy section in
 `env.example`. That needs a DNS record and ports 80 and 443 reachable from the
 internet.
 
-### Last step: point your dashboard at the HTTPS address
+### Last step: use the HTTPS address, and bookmark it
 
-**If you installed through CasaOS, Portainer, Dockge or anything else with an "open
-app" button, you must update that address by hand once Tailscale is approved.** Set
-the app's **Web UI** / URL setting to your full Tailscale address:
+Once Tailscale is approved, your instance lives at:
 
 ```
 https://armoryhub.<your-tailnet>.ts.net
 ```
 
-Until you do, the button opens `http://<server-ip>:8477` — the one address the app
-cannot work on. You will be able to sign in and then fail to set or enter your PIN,
-because browsers withhold Web Crypto from insecure origins.
+**Bookmark that.** It is the address to use from every device.
 
-No dashboard can fill this in for you, for two reasons: the app binds to
-`127.0.0.1` deliberately, so it is not reachable over your LAN and there is nothing
-for the dashboard to detect; and the Tailscale hostname does not exist yet at the
-moment the compose file is first parsed.
+If you run a dashboard like CasaOS, its "open app" button will point at
+`http://<server-ip>:8477` instead — the one address the app cannot work on. You will be
+able to sign in and then fail to set or enter your PIN, because browsers withhold Web
+Crypto from insecure origins. No dashboard can detect the right address for you: the app
+binds to `127.0.0.1` deliberately, so there is nothing on your LAN to find, and the
+Tailscale hostname does not exist when the compose file is first read.
+
+**On CasaOS, do not fix this by editing the app's Web UI setting.** Saving that form
+rewrites your compose file and deletes the `tailscale`, `restore` and `caddy` services —
+see the CasaOS section below. Ignore the button and use your bookmark. If you would
+rather have a working tile and accept the rewrite, the workaround is documented there
+too.
 
 ### Using your own reverse proxy instead of Tailscale
 
