@@ -430,6 +430,11 @@ configs:
 # to another machine with whatever tools you already use. `docker compose down -v`
 # will not delete them.
 #
+# Keep them on ordinary local storage. Postgres on a FUSE mount or a network share
+# risks locking errors and corruption. On Unraid that means a cache-backed path
+# rather than a /mnt/user/... share, since user shares go through shfs (FUSE). The
+# same applies to NFS and SMB.
+#
 # If you move this file, move ./data with it. And if you create these directories
 # yourself instead of using install.sh, they must be owned by uid 1001 — that is
 # the user the app runs as, and it cannot write to them otherwise:

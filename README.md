@@ -110,6 +110,53 @@ No dashboard can fill this in for you, for two reasons: the app binds to
 for the dashboard to detect; and the Tailscale hostname does not exist yet at the
 moment the compose file is first parsed.
 
+### Using your own reverse proxy instead of Tailscale
+
+If you already run nginx, Caddy, Traefik or similar and want to use your own
+certificates, you don't need Tailscale at all.
+
+**1. Let your proxy reach the app.** Which option applies depends on where the proxy
+runs:
+
+| Your proxy | What to do |
+|---|---|
+| Same host, host network mode | Nothing — `http://127.0.0.1:8477` already works |
+| Docker bridge network, or another machine | Set `APP_BIND=0.0.0.0` in `.env` |
+| Attached to this stack's network | Target `app:3000` and publish nothing at all |
+
+The app binds to `127.0.0.1` by default on purpose, so it is not reachable from your
+LAN. `APP_BIND=0.0.0.0` removes that protection and serves an unencrypted login page
+to your whole network — only set it with a TLS-terminating proxy in front.
+
+**2. Set your address:** `APP_URL=https://armory.example.com` in `.env`.
+
+**3. Turn off the Tailscale sidecar**, or it will keep starting unused:
+
+```bash
+sed -i 's/^COMPOSE_PROFILES=.*/COMPOSE_PROFILES=/' .env
+```
+
+**4. Terminate TLS at the proxy.** Browsers only allow the encryption ArmoryHub needs
+over HTTPS or on `localhost`, so reaching it by plain `http://` at a LAN address will
+let you sign in and then fail to unlock your data.
+
+### Where to install it — important on NAS hardware
+
+The database lives in `./data/postgres`, next to the compose file. **Put it on
+ordinary local storage.**
+
+Do not put it on a FUSE mount or a network share. On Unraid, that means installing to
+a cache-backed path rather than a user share: `/mnt/user/...` goes through shfs
+(FUSE), and Postgres on FUSE risks locking errors and database corruption. The same
+applies to NFS, SMB and similar.
+
+```bash
+curl -fsSL https://armoryhub.app/install.sh | ARMORYHUB_DIR=/mnt/cache/appdata/armoryhub sh
+```
+
+Note the variable goes **after** the pipe, so it applies to the shell running the
+script rather than to `curl`.
+
 ## Installing it as an app on your phone and computer
 
 ArmoryHub installs to your home screen or dock and then behaves like any other app —
