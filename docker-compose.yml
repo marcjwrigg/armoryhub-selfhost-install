@@ -491,7 +491,14 @@ x-casaos:
       Reach it over HTTPS via Tailscale. Because the app binds to localhost only,
       the Web UI address below must be set to your Tailscale hostname after you
       approve the machine.
-  icon: https://raw.githubusercontent.com/marcjwrigg/armoryhub-selfhost-install/main/icon.png
+  # No icon URL on purpose. A remote icon means every dashboard render fetches an image
+  # from the internet, which fails outright on an air-gapped network and tells a third
+  # party that this machine runs ArmoryHub. Neither is acceptable for a product whose
+  # point is that nothing leaves your network.
+  #
+  # CasaOS shows a generic icon instead. If you want the real one, icon.png is published
+  # alongside this file — download it, host it somewhere on your own network, and set
+  # `icon:` to that address.
   scheme: https
   index: /
   port_map: "8477"
