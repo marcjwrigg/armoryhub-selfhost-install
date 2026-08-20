@@ -133,7 +133,7 @@ ok 'generated .env with unique secrets (mode 600)'
 # These are ordinary directories rather than Docker volumes, so you can copy and
 # back them up with whatever tools you already use, and `docker compose down -v`
 # cannot delete them.
-mkdir -p data/postgres data/app/files data/app/branding data/backups data/tailscale
+mkdir -p data/postgres data/app/files data/backups data/tailscale
 
 # ArmoryHub runs as a different user inside the container, so it needs to own these
 # directories to write to them. Your own account keeps read access via the group,

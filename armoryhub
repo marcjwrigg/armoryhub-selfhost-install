@@ -296,6 +296,32 @@ case "$CMD" in
     docker compose pull
     docker compose down --remove-orphans
     docker compose up -d
+
+    # Update this script too. `docker compose pull` refreshes the image; this file
+    # lives on the host and nothing else would ever replace it, so without this the
+    # helper silently ages out while the app moves on.
+    #
+    # Written to a sibling then renamed, never copied over in place: rename swaps the
+    # directory entry and leaves the running script's inode alone, whereas cp truncates
+    # the file this shell is still reading from.
+    HELPER_URL="https://raw.githubusercontent.com/marcjwrigg/armoryhub-selfhost-install/main/armoryhub"
+    NEW="$0.new"
+    if curl -fsSL "$HELPER_URL" -o "$NEW" 2>/dev/null && sh -n "$NEW" 2>/dev/null; then
+      if cmp -s "$NEW" "$0"; then
+        rm -f "$NEW"
+      elif mv "$NEW" "$0" 2>/dev/null && chmod +x "$0" 2>/dev/null; then
+        echo "  armoryhub command updated"
+      elif sudo mv "$NEW" "$0" 2>/dev/null && sudo chmod +x "$0" 2>/dev/null; then
+        echo "  armoryhub command updated"
+      else
+        rm -f "$NEW"
+        echo "  a newer armoryhub command is available but could not be written to $0"
+        echo "  update it with:  sudo curl -fsSL $HELPER_URL -o $0 && sudo chmod +x $0"
+      fi
+    else
+      rm -f "$NEW"
+    fi
+
     echo
     echo "  If tailscale did not come back, your compose file has been rewritten."
     echo "  Run 'armoryhub doctor' to confirm." ;;
