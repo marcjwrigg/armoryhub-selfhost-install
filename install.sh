@@ -256,8 +256,11 @@ elif [ -n "$AUTH_URL" ]; then
   say '   https://armoryhub.<your-tailnet>.ts.net'
   say '  ============================================================'
   say ''
-  say '  The link is single-use. If it expires, get a fresh one with:'
-  say "    cd $DIR && docker compose exec tailscale tailscale status"
+  say '  Approve it promptly. While the machine sits unauthenticated the container'
+  say '  re-registers periodically, and that invalidates the link above.'
+  say ''
+  say '  The current link, whenever you need it:'
+  say "    docker exec \$(docker ps -q -f name=tailscale) tailscale status"
 else
   warn 'Tailscale did not report an auth URL in time.'
   say "  Check with:  cd $DIR && docker compose logs tailscale"
@@ -361,9 +364,24 @@ say '  Write your PIN down and keep it somewhere safe and offline. Also set up a
 say '  recovery passphrase, which is what lets you add a new device later — but note'
 say '  it does NOT get you back in if you forget the PIN. You need both.'
 say ''
+# Point people at the helper rather than at raw compose commands. Compose commands
+# with --profile break the moment a dashboard rewrites docker-compose.yml, and the
+# helper does not read that file at all.
+if [ -x /usr/local/bin/armoryhub ]; then
+  AH='armoryhub'
+else
+  AH="$DIR/armoryhub"
+fi
+
 say '  Useful commands:'
-say "    cd $DIR"
-say '    docker compose logs -f app                                    # what it is doing'
-say '    docker compose --profile tools run --rm restore list          # backups'
-say '    docker exec -it $(docker ps -q -f name=armoryhub.*app) node reset-password.js'
+say "    $AH doctor          # check everything and say what is wrong"
+say "    $AH logs            # what the app is doing"
+say "    $AH url             # the address to open"
+say "    $AH backup list     # your backups"
+say "    $AH password        # reset your account password"
 say ''
+if [ ! -x /usr/local/bin/armoryhub ] && [ -f "$DIR/armoryhub" ]; then
+  say '  To run it as just `armoryhub` from anywhere:'
+  say "    sudo install -m 755 $DIR/armoryhub /usr/local/bin/armoryhub"
+  say ''
+fi
