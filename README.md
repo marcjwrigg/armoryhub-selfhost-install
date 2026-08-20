@@ -367,7 +367,21 @@ containers, whether the app answers, whether HTTPS actually works end to end, wh
 your compose file has been rewritten, whether the database is on storage that will
 corrupt it, free space, and backup age — and tells you what to do about each.
 
-If it was not installed to your PATH, it is in your install directory: `./armoryhub`.
+If `armoryhub` says "command not found", the installer could not write to
+`/usr/local/bin` — it needs sudo, which it will not use unattended. The helper is in
+your install directory instead, so either run it from there:
+
+```bash
+~/armoryhub/armoryhub doctor
+```
+
+or put it on your PATH once:
+
+```bash
+sudo install -m 755 ~/armoryhub/armoryhub /usr/local/bin/armoryhub
+```
+
+After that, `armoryhub` works from any directory.
 
 ### Doing it with docker compose instead
 
