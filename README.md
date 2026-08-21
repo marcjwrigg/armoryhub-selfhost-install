@@ -21,19 +21,36 @@ credentials, and no build step required to install.
 
 ## Quick start
 
+**Two things have to be in place first. Neither is optional, and neither is done for
+you.**
+
+**1. Docker, with the Compose plugin**, and `docker ps` working as your normal user —
+not root, no `sudo`. On a fresh server you will usually need:
+
+```bash
+sudo usermod -aG docker $USER    # then log out and back in
+```
+
+**2. A Tailscale account with MagicDNS and HTTPS Certificates enabled.** Both are free
+and **both are off by default** — turn them on once at
+<https://login.tailscale.com/admin/dns>. You will also need the Tailscale app on
+whatever device you intend to use ArmoryHub from.
+
+**Then, on the server:**
+
 ```bash
 curl -fsSL https://armoryhub.app/install.sh | sh
 ```
 
-1. Check `docker ps` works as your normal user
-2. Turn on **HTTPS Certificates** in your Tailscale account, once:
-   <https://login.tailscale.com/admin/dns>
-3. Run the command above
-4. Click the approval link it prints
-5. Open the `https://...ts.net` address it gives you, and create your account
+- Click the approval link it prints
+- Open the `https://...ts.net` address it gives you and create your account
 
-That is the whole thing. Everything below is detail, alternatives and troubleshooting.
-You do not need any of it unless something goes wrong or you want a different setup.
+With those two prerequisites in place, that genuinely is all of it — the installer sets
+up Postgres, the app, nightly backups, Tailscale and HTTPS on its own.
+
+Without them it will fail at the last step, and the failure looks far worse than it is:
+no certificate, no working address, and nothing obviously wrong with the containers.
+Everything below is detail, alternatives and troubleshooting.
 
 ## What you need
 
