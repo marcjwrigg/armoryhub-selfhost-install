@@ -248,57 +248,6 @@ curl -fsSL https://armoryhub.app/install.sh | ARMORYHUB_DIR=/mnt/cache/appdata/a
 Note the variable goes **after** the pipe, so it applies to the shell running the
 script rather than to `curl`.
 
-## Moving an existing hosted account across
-
-Your data comes over as a single encrypted archive. Nothing is re-encrypted, and no
-key ever travels in a form anyone could use.
-
-**1. On hosted:** Settings → Export. You get a `.zip`.
-
-**2. On your instance:** Settings → Import, and select that file.
-
-Before it changes anything, it shows you which account the archive came from, when it
-was exported, how many records and files it contains, whether the account had a
-passphrase, and how many records a replace would remove. You have to tick a box
-acknowledging that before it will proceed.
-
-**3. Unlock with the secret from your HOSTED account** — not the PIN you just set up
-here. The app reloads and asks for it.
-
-### Which secret you need, and why
-
-This is worth reading before you start, because the answer differs depending on how
-your hosted account was set up.
-
-The archive carries your master key **wrapped**, along with the salts needed to derive
-the key that unwraps it. The plaintext key is never in the file, and neither is your
-PIN or passphrase. That is why your existing secret still works on a completely
-different server: the new instance is not given your key, it is given something only
-your secret can open.
-
-| Your hosted account | What you need after importing |
-|---|---|
-| PIN only | your **hosted PIN** |
-| PIN **and** a passphrase | your **passphrase**, then your **hosted PIN** |
-
-The second row surprises people. Enabling a passphrase deliberately removes the
-PIN-wrapped copy of your key from the server, so that the only copy we ever hold is
-protected by something far stronger than six digits. That copy is what ends up in your
-export — so the passphrase is the only thing that can open it.
-
-**If you set a passphrase on hosted and no longer have it, do not export and wipe
-anything.** Your records cannot be decrypted without it, on either instance. Check that
-you have it before you start.
-
-### After it finishes
-
-The PIN you created during self-hosted setup is gone — it belonged to the empty account
-the import replaced. From then on you unlock with the secret that came across, and you
-can change it in Security settings once you are in.
-
-Your hosted account is untouched by any of this. Keep it until you are satisfied the
-migration worked, and compare a few records before you rely on the new instance.
-
 ## The armoryhub command
 
 The installer sets up an `armoryhub` command. Use it in preference to `docker compose`:
@@ -565,6 +514,57 @@ disagree.
 Symptom that tells you CasaOS has rewritten the file: `no such service: restore` or
 `no such service: tailscale`, while the containers are visibly running.
 
+
+## Moving an existing hosted account across
+
+Your data comes over as a single encrypted archive. Nothing is re-encrypted, and no
+key ever travels in a form anyone could use.
+
+**1. On hosted:** Settings → Data Management → Export Data. You get a `.zip`.
+
+**2. On your instance:** Settings → Data Management → Import Data, and select that file.
+
+Before it changes anything, it shows you which account the archive came from, when it
+was exported, how many records and files it contains, whether the account had a
+passphrase, and how many records a replace would remove. You have to tick a box
+acknowledging that before it will proceed.
+
+**3. Unlock with the secret from your HOSTED account** — not the PIN you just set up
+here. The app reloads and asks for it.
+
+### Which secret you need, and why
+
+This is worth reading before you start, because the answer differs depending on how
+your hosted account was set up.
+
+The archive carries your master key **wrapped**, along with the salts needed to derive
+the key that unwraps it. The plaintext key is never in the file, and neither is your
+PIN or passphrase. That is why your existing secret still works on a completely
+different server: the new instance is not given your key, it is given something only
+your secret can open.
+
+| Your hosted account | What you need after importing |
+|---|---|
+| PIN only | your **hosted PIN** |
+| PIN **and** a passphrase | your **passphrase**, then your **hosted PIN** |
+
+The second row surprises people. Enabling a passphrase deliberately removes the
+PIN-wrapped copy of your key from the server, so that the only copy we ever hold is
+protected by something far stronger than six digits. That copy is what ends up in your
+export — so the passphrase is the only thing that can open it.
+
+**If you set a passphrase on hosted and no longer have it, do not export and wipe
+anything.** Your records cannot be decrypted without it, on either instance. Check that
+you have it before you start.
+
+### After it finishes
+
+The PIN you created during self-hosted setup is gone — it belonged to the empty account
+the import replaced. From then on you unlock with the secret that came across, and you
+can change it in Security settings once you are in.
+
+Your hosted account is untouched by any of this. Keep it until you are satisfied the
+migration worked, and compare a few records before you rely on the new instance.
 
 ---
 
