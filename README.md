@@ -3,6 +3,21 @@
 Configuration only — the application itself is a container image. No account, no
 credentials, and no build step required to install.
 
+## Contents
+
+- [What you need](#what-you-need)
+- [Install (one command)](#install-one-command)
+- [Install-time options](#install-time-options)
+- [HTTPS is required, not optional](#https-is-required-not-optional)
+- [The armoryhub command](#the-armoryhub-command)
+- [Updating](#updating)
+- [Backups](#backups)
+- [Uninstalling](#uninstalling)
+- [Your password, PIN and passphrase](#your-password-pin-and-passphrase)
+- [Installing it as an app on your phone and computer](#installing-it-as-an-app-on-your-phone-and-computer)
+- [Running under CasaOS, Portainer or Dockge](#running-under-casaos-portainer-or-dockge)
+- [Moving an existing hosted account across](#moving-an-existing-hosted-account-across)
+
 ## What you need
 
 **A machine that stays on, running Linux.** A NAS, a mini PC, or an old laptop is
