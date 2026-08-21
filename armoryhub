@@ -146,6 +146,15 @@ doctor() {
   fi
 
   # 4. HTTPS. This is the one that presents as a blank page with an empty console.
+  #
+  # Deliberately does NOT trust a single probe. The obvious check — wget from inside
+  # the tailscale container to its own public name — fails in setups where HTTPS is
+  # working perfectly: the container has to resolve its own MagicDNS name and loop back
+  # to itself through userspace netstack, which is not guaranteed. A tester had
+  # ArmoryHub open in a browser on two devices while this reported it broken.
+  #
+  # So the probe is one signal among several. It is only called broken when the
+  # supporting evidence agrees: no certificate, or serve not configured.
   if [ -n "$TS" ]; then
     NAME=$(ts_domain || true)
     if [ -z "$NAME" ]; then
@@ -153,18 +162,37 @@ doctor() {
       info "approve the machine using the link in:  armoryhub logs tailscale"
     else
       ok "tailscale address: https://$NAME"
-      if docker exec "$TS" wget -q -T 12 -O /dev/null "https://$NAME/api/selfhost/auth/status" 2>/dev/null; then
+
+      PROBE_ERR=$(docker exec "$TS" wget -q -T 12 -O /dev/null \
+        "https://$NAME/api/selfhost/auth/status" 2>&1) && PROBE=ok || PROBE=fail
+
+      if [ "$PROBE" = ok ]; then
         ok "HTTPS working end to end"
       else
         RATE=$(docker logs "$TS" 2>&1 | grep -oE 'too many certificates.*retry after [0-9: -]+UTC' | tail -1 || true)
+        CERT=fail
+        docker exec "$TS" tailscale cert --cert-file /tmp/_c --key-file /tmp/_k "$NAME" >/dev/null 2>&1 && CERT=ok
+        SERVE=fail
+        docker exec "$TS" tailscale serve status 2>/dev/null | grep -q 'proxy http' && SERVE=ok
+
         if [ -n "$RATE" ]; then
           bad "HTTPS blocked by a certificate rate limit"
           info "$RATE"
           info "the limit is per hostname; reinstall with a different one to get a certificate now:"
           info "  curl -fsSL https://armoryhub.app/install.sh | ARMORYHUB_TS_HOSTNAME=armory2 sh"
+        elif [ "$CERT" = ok ] && [ "$SERVE" = ok ]; then
+          ok "certificate valid and traffic routed to the app"
+          warn "could not confirm HTTPS from inside the container — this check is unreliable"
+          info "everything needed for HTTPS is in place, so open https://$NAME in a browser"
+          info "and trust that over this check. Probe said: ${PROBE_ERR:-no output}"
+        elif [ "$CERT" != ok ]; then
+          bad "no certificate for $NAME"
+          info "see the reason with:"
+          info "  docker exec $TS tailscale cert $NAME"
         else
-          bad "HTTPS not working — this looks like a blank page in a browser"
-          info "real error:  docker exec $TS tailscale cert $NAME"
+          bad "certificate is fine but Tailscale is not routing to the app"
+          info "check the proxy configuration with:"
+          info "  docker exec $TS tailscale serve status"
         fi
       fi
     fi

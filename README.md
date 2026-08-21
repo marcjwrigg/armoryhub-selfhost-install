@@ -19,21 +19,36 @@ The install itself downloads roughly 150 MB. Photos are the only thing that grow
 much over time — budget for the size of your existing photo library, plus room for
 backups, which keep 7 daily and 4 weekly copies.
 
-**Docker, with the Compose plugin.** If this prints a version, you are ready:
+**Docker, with the Compose plugin.** Both of these must work **as your normal user**,
+without `sudo`:
 
 ```bash
+docker ps
 docker compose version
 ```
 
+If `docker ps` gives you a permission error on `/var/run/docker.sock`, your user is not
+in the `docker` group yet. That catches most people on a fresh server:
+
+```bash
+sudo usermod -aG docker $USER
+```
+
+Then log out and back in — the group change does not apply to your current session.
+
 Compose **v2.23 or newer** is required. Older versions cannot read the setup scripts
 embedded in `docker-compose.yml` and fail with a confusing error about `configs`.
-If you need to install Docker, follow
-<https://docs.docker.com/engine/install/> and then
-<https://docs.docker.com/engine/install/linux-postinstall/> so you can use Docker
-without `sudo`.
+If Docker is not installed yet, follow
+<https://docs.docker.com/engine/install/>.
 
-**A free Tailscale account**, at <https://tailscale.com>. This is how you get HTTPS,
-which is not optional — see below.
+**A free Tailscale account**, at <https://tailscale.com>.
+
+If you have not used Tailscale before: it is a private network that links your own
+devices together, wherever they are. ArmoryHub uses it for two things — reaching your
+instance from your phone or laptop without exposing anything to the internet, and
+getting a real HTTPS certificate for it. HTTPS is not optional here, and this is by
+far the easiest way to get it. You can use your own reverse proxy and certificates
+instead if you prefer.
 
 **You do not need** a domain name, a static IP, port forwarding, any firewall
 changes, or root access beyond installing Docker itself. Nothing is exposed to the
@@ -131,6 +146,23 @@ rewrites your compose file and deletes the `tailscale`, `restore` and `caddy` se
 see the CasaOS section below. Ignore the button and use your bookmark. If you would
 rather have a working tile and accept the rewrite, the workaround is documented there
 too.
+
+### If it loads on your phone but not your computer
+
+**Check whether another VPN is running on that device.** A second VPN client will
+happily route around Tailscale, and the way it fails is genuinely misleading: Tailscale
+itself keeps working, so
+
+```bash
+tailscale ping armoryhub
+```
+
+still gets replies and everything looks reachable — while connections to port 443 quietly
+fail. It reads as a broken certificate or a server problem, and you can lose an evening
+to it.
+
+The quickest way to identify it: try the same address from your phone on mobile data. If
+the phone works and the desktop does not, the problem is on the desktop, not the server.
 
 ### Using your own reverse proxy instead of Tailscale
 
