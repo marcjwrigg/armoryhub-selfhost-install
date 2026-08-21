@@ -50,6 +50,16 @@ getting a real HTTPS certificate for it. HTTPS is not optional here, and this is
 far the easiest way to get it. You can use your own reverse proxy and certificates
 instead if you prefer.
 
+**You will also need the Tailscale app on every device you want to use ArmoryHub
+from** — your phone, your laptop, anything else — signed in to the same account. Your
+instance lives on that private network, so its address only resolves on devices that
+have joined it. Nothing loads without it, which surprises people who set the server up
+and then try to open it on a phone that is not connected yet.
+
+See [Installing it as an app on your phone and
+computer](#installing-it-as-an-app-on-your-phone-and-computer) for the per-device
+steps.
+
 **You do not need** a domain name, a static IP, port forwarding, any firewall
 changes, or root access beyond installing Docker itself. Nothing is exposed to the
 internet.
