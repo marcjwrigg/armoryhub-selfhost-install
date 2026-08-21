@@ -185,6 +185,17 @@ doctor() {
           warn "could not confirm HTTPS from inside the container — this check is unreliable"
           info "everything needed for HTTPS is in place, so open https://$NAME in a browser"
           info "and trust that over this check. Probe said: ${PROBE_ERR:-no output}"
+        elif docker logs "$TS" 2>&1 | grep -q 'does not support getting TLS certs' \
+             || docker exec "$TS" tailscale cert --cert-file /tmp/_c --key-file /tmp/_k "$NAME" 2>&1 \
+                | grep -q 'does not support getting TLS certs'; then
+          # A one-toggle fix that otherwise reads as a totally broken install. Off by
+          # default on every tailnet, so anyone new to Tailscale hits it.
+          bad "HTTPS certificates are not enabled on your Tailscale account"
+          info "turn them on — free, takes a moment:"
+          info "  1. open https://login.tailscale.com/admin/dns"
+          info "  2. enable MagicDNS if it is not already on"
+          info "  3. enable HTTPS Certificates"
+          info "  4. cd $DIR && docker compose --profile tailscale restart tailscale"
         elif [ "$CERT" != ok ]; then
           bad "no certificate for $NAME"
           info "see the reason with:"

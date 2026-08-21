@@ -5,6 +5,7 @@ credentials, and no build step required to install.
 
 ## Contents
 
+- [Quick start](#quick-start)
 - [What you need](#what-you-need)
 - [Install (one command)](#install-one-command)
 - [Install-time options](#install-time-options)
@@ -17,6 +18,22 @@ credentials, and no build step required to install.
 - [Installing it as an app on your phone and computer](#installing-it-as-an-app-on-your-phone-and-computer)
 - [Running under CasaOS, Portainer or Dockge](#running-under-casaos-portainer-or-dockge)
 - [Moving an existing hosted account across](#moving-an-existing-hosted-account-across)
+
+## Quick start
+
+```bash
+curl -fsSL https://armoryhub.app/install.sh | sh
+```
+
+1. Check `docker ps` works as your normal user
+2. Turn on **HTTPS Certificates** in your Tailscale account, once:
+   <https://login.tailscale.com/admin/dns>
+3. Run the command above
+4. Click the approval link it prints
+5. Open the `https://...ts.net` address it gives you, and create your account
+
+That is the whole thing. Everything below is detail, alternatives and troubleshooting.
+You do not need any of it unless something goes wrong or you want a different setup.
 
 ## What you need
 
@@ -64,6 +81,17 @@ instance from your phone or laptop without exposing anything to the internet, an
 getting a real HTTPS certificate for it. HTTPS is not optional here, and this is by
 far the easiest way to get it. You can use your own reverse proxy and certificates
 instead if you prefer.
+
+**Turn on HTTPS certificates for your Tailscale account.** One toggle, free on every
+plan, and off by default — so if you are new to Tailscale you will hit this:
+
+1. <https://login.tailscale.com/admin/dns>
+2. Enable **MagicDNS** if it is not already on
+3. Enable **HTTPS Certificates**
+
+Without it, everything installs correctly and then fails at the last step with
+`your Tailscale account does not support getting TLS certs`, which looks far worse
+than it is.
 
 **You will also need the Tailscale app on every device you want to use ArmoryHub
 from** — your phone, your laptop, anything else — signed in to the same account. Your
