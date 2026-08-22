@@ -10,8 +10,14 @@
 # nobody logged out. Doing it by hand means finding four separate sets of
 # instructions and getting the order right.
 #
+# Works unchanged on Ubuntu and the other Debian derivatives — it keys off apt-get
+# rather than the distribution, the sudo and docker group names match, and anything
+# already present is left alone. The one difference is how you become root: Debian
+# sets a root password so `su -` works, whereas Ubuntu locks the root account and
+# you want `sudo -i` instead.
+#
 # Must be run as root: a fresh Debian install has no sudo yet, which is part of
-# what this fixes. Get to root with `su -` first, then run it.
+# what this fixes.
 #
 # Usage:
 #   ./bootstrap-debian.sh <username>
@@ -21,7 +27,11 @@ set -eu
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "Error: this script must be run as root."
-  echo "Run 'su -' first (enter the root password), then re-run this script."
+  echo
+  echo "  On Debian:  su -        (the root password you set during installation)"
+  echo "  On Ubuntu:  sudo -i     (your own password — root is locked by default)"
+  echo
+  echo "Then re-run this script."
   exit 1
 fi
 

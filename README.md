@@ -7,7 +7,7 @@ credentials, and no build step required to install.
 
 - [Quick start](#quick-start)
 - [What you need](#what-you-need)
-- [Starting from a fresh Debian VM](#starting-from-a-fresh-debian-vm)
+- [Starting from a fresh Debian or Ubuntu VM](#starting-from-a-fresh-debian-or-ubuntu-vm)
 - [Install (one command)](#install-one-command)
 - [Install-time options](#install-time-options)
 - [HTTPS is required, not optional](#https-is-required-not-optional)
@@ -38,7 +38,7 @@ and **both are off by default** — turn them on once at
 whatever device you intend to use ArmoryHub from.
 
 *Brand-new Debian VM with none of this in place yet?* One script does the whole lot —
-see [Starting from a fresh Debian VM](#starting-from-a-fresh-debian-vm) — then come
+see [Starting from a fresh Debian or Ubuntu VM](#starting-from-a-fresh-debian-or-ubuntu-vm) — then come
 back here.
 
 **Then, on the server:**
@@ -154,10 +154,10 @@ steps.
 changes, or root access beyond installing Docker itself. Nothing is exposed to the
 internet.
 
-## Starting from a fresh Debian VM
+## Starting from a fresh Debian or Ubuntu VM
 
-If you have just clicked through the Debian installer and have nothing else set up,
-this script takes you from there to ready-for-ArmoryHub in one run. It updates the
+If you have just clicked through the Debian or Ubuntu installer and have nothing else
+set up, this script takes you from there to ready-for-ArmoryHub in one run. It updates the
 system, installs `sudo`, `curl`, `ca-certificates` and SSH, installs Docker Engine
 with the Compose plugin, and adds your user to both the `sudo` and `docker` groups.
 
@@ -170,14 +170,32 @@ out and back in so it takes effect — is easy to get half-right.
 it — it is here as a convenience for people who would rather not assemble the steps
 themselves, and skipping it entirely is a perfectly normal way to install.
 
-It must run as **root**, because a fresh Debian install has no `sudo` yet. That is
-part of what it fixes. Root is also exactly why you should read it first:
+It must run as **root** — on Debian because a fresh install has no `sudo` yet, which
+is part of what it fixes.
+
+**Becoming root differs between the two, and it is the one place they diverge.** Debian
+sets a root password during installation, so `su -` works. Ubuntu locks the root
+account by default, so `su -` will just reject your password no matter what you type
+— use `sudo -i` there instead. Everything after that point is identical. Root is also exactly why you should read it first:
 **[bootstrap-debian.sh](bootstrap-debian.sh)** is in this repo, about a hundred
 lines, and every step is commented. Read it there, or download it and read it
 locally — do not take our word for what it does.
 
+Become root first — **on Debian:**
+
 ```bash
-su -                                         # a fresh Debian has no sudo yet
+su -                                         # the root password you set at install
+```
+
+**On Ubuntu**, where the root account is locked:
+
+```bash
+sudo -i                                      # your own password
+```
+
+Then, identically on both:
+
+```bash
 apt-get update && apt-get install -y curl    # Debian does not ship curl
 curl -fsSL https://raw.githubusercontent.com/marcjwrigg/armoryhub-selfhost-install/main/bootstrap-debian.sh -o bootstrap-debian.sh
 less bootstrap-debian.sh                     # or cat — read it before running it
@@ -186,9 +204,10 @@ bash bootstrap-debian.sh <your-username>
 
 The `apt-get install curl` line is not a mistake: **Debian does not include `curl`
 in a default install**, so the download command fails with `curl: command not found`
-on exactly the fresh machine this section is about. If you already have `curl`, or
-prefer `wget` (which Debian usually does ship), skip that line and use whichever you
-have. The script installs `curl` properly later on for the rest of the setup.
+on exactly the fresh machine this section is about. Ubuntu Server generally does ship
+it, so there the line is simply a no-op. If you already have `curl`, or prefer
+`wget`, skip that line and use whichever you have. The script installs `curl`
+properly later on for the rest of the setup.
 
 Downloaded and read, then run as a separate deliberate step — deliberately not a
 `curl ... | sh` one-liner. Piping a root-privileged script straight from the
@@ -216,8 +235,11 @@ A permission error on `/var/run/docker.sock` means you are still in the old sess
 Once that works, carry on with [Install (one command)](#install-one-command) as your
 normal user, not as root.
 
-It is safe to re-run, it skips Docker if Docker is already installed, and it works on
-Ubuntu and the other Debian derivatives too. If you are on something else, install
+It is safe to re-run, and it skips Docker if Docker is already installed. It works
+unchanged on Ubuntu and the other Debian derivatives — it keys off `apt-get` rather
+than checking for a particular distribution, the `sudo` and `docker` group names are
+the same on both, and anything already installed is simply left alone. If you are on
+something else, install
 Docker via <https://docs.docker.com/engine/install/> and add yourself to the
 `docker` group by hand.
 
@@ -725,4 +747,4 @@ migration worked, and compare a few records before you rely on the new instance.
 
 ---
 
-Version: `0.1.6`
+Version: `0.1.7`
