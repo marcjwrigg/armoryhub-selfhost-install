@@ -1,7 +1,14 @@
 # Install self-hosted ArmoryHub
 
+[![CI](https://github.com/marcjwrigg/armoryhub-selfhost-install/actions/workflows/ci.yml/badge.svg)](https://github.com/marcjwrigg/armoryhub-selfhost-install/actions/workflows/ci.yml)
+
 Configuration only — the application itself is a container image. No account, no
 credentials, and no build step required to install.
+
+Every script here is linted and the compose file is validated in all four supported
+configurations on every change — [see for yourself](../../actions/workflows/ci.yml).
+You are about to run a shell script on your own machine; that should be checkable
+rather than a claim.
 
 > ### Already running ArmoryHub? Run this once
 >
