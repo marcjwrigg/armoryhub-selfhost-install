@@ -68,6 +68,24 @@ The install itself downloads roughly 150 MB. Photos are the only thing that grow
 much over time — budget for the size of your existing photo library, plus room for
 backups, which keep 7 daily and 4 weekly copies.
 
+**If you are installing into a virtual machine, set its CPU type to `host`.**
+Proxmox, and most other hypervisors, default to a generic emulated CPU —
+`kvm64` or `qemu64` — which hides the real processor's AES-NI and AVX2
+instructions from the guest. Those are exactly the instructions HTTPS and
+password hashing use, so the default quietly forces both onto slow software
+fallbacks and makes signing in and loading pages sluggish for no benefit at all.
+
+- **Proxmox:** *Hardware → Processors → Type: `host`*
+- **libvirt / virt-manager:** tick *Copy host CPU configuration*, or set
+  `<cpu mode='host-passthrough'/>` in the domain XML
+- **VMware, Hyper-V, UTM:** the equivalent is usually called CPU pass-through or
+  "expose host features"
+
+You can change this on a VM you have already built: shut it down, change the
+type, start it again. Nothing inside ArmoryHub needs touching. The only thing
+pass-through costs you is live-migrating that VM to a machine with a different
+CPU, which is not something a single home instance does.
+
 **Docker, with the Compose plugin.** Both of these must work **as your normal user**,
 without `sudo`:
 
