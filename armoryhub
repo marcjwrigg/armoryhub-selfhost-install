@@ -44,7 +44,6 @@ PROBLEMS=0
 container() { docker ps -q -f "label=com.docker.compose.project=$PROJECT" -f "name=$1" 2>/dev/null | head -1; }
 
 APP=$(container app || true)
-DB=$(container db || true)
 TS=$(container tailscale || true)
 
 if [ -z "$DIR" ] && [ -n "$APP" ]; then
@@ -286,7 +285,10 @@ doctor() {
 
   # 8. Backups: existence is not the point, recency is.
   if [ -d "$DIR/data/backups" ]; then
+    # shellcheck disable=SC2012  # backup filenames are our own timestamps, no spaces,
+    # and ls -t is the shortest way to get the newest in POSIX sh.
     NEWEST=$(ls -1t "$DIR/data/backups" 2>/dev/null | head -1 || true)
+    # shellcheck disable=SC2012
     COUNT=$(ls -1 "$DIR/data/backups" 2>/dev/null | wc -l | tr -d ' ')
     if [ -z "$NEWEST" ]; then
       warn "no backups yet — one runs nightly, or force one with:  armoryhub backup now"

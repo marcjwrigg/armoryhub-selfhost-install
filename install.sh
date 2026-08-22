@@ -284,7 +284,13 @@ ok 'created ./data (postgres, app, backups, tailscale) — readable by you'
 # Everything the operator needs afterwards goes through this rather than through
 # `docker compose`, because dashboards that rewrite the compose file strip the
 # profile-gated services and break those commands. The helper reads Docker directly.
-curl -fsSL "$RAW/armoryhub" -o armoryhub 2>/dev/null && chmod +x armoryhub || warn 'could not download the armoryhub helper'
+# if/then rather than `curl && chmod || warn`: in that form the warning also fires
+# when the download succeeded and only chmod failed, reporting the wrong cause.
+if curl -fsSL "$RAW/armoryhub" -o armoryhub 2>/dev/null; then
+  chmod +x armoryhub || warn 'downloaded the armoryhub helper but could not make it executable'
+else
+  warn 'could not download the armoryhub helper'
+fi
 if [ -f armoryhub ]; then
   # Only the no-prompt paths here. If neither works we ask at the end, once the
   # install has succeeded, rather than interrupting it for a password.
@@ -669,6 +675,8 @@ if [ -f "$DIR/armoryhub" ] && [ ! -x /usr/local/bin/armoryhub ] && [ -n "$TTY_OK
   read -r ANS <&3 || ANS=n
   case "$ANS" in
     ''|y|Y|yes|YES|Yes)
+      # shellcheck disable=SC2024  # that is an INPUT redirect, so sudo can prompt on
+      # the terminal; SC2024 is about output redirects losing root.
       if sudo install -m 755 "$DIR/armoryhub" /usr/local/bin/armoryhub </dev/tty; then
         ok 'installed — run `armoryhub doctor` from anywhere'
       else
