@@ -7,6 +7,7 @@ credentials, and no build step required to install.
 
 - [Quick start](#quick-start)
 - [What you need](#what-you-need)
+- [Starting from a fresh Debian VM](#starting-from-a-fresh-debian-vm)
 - [Install (one command)](#install-one-command)
 - [Install-time options](#install-time-options)
 - [HTTPS is required, not optional](#https-is-required-not-optional)
@@ -35,6 +36,10 @@ sudo usermod -aG docker $USER    # then log out and back in
 and **both are off by default** — turn them on once at
 <https://login.tailscale.com/admin/dns>. You will also need the Tailscale app on
 whatever device you intend to use ArmoryHub from.
+
+*Brand-new Debian VM with none of this in place yet?* One script does the whole lot —
+see [Starting from a fresh Debian VM](#starting-from-a-fresh-debian-vm) — then come
+back here.
 
 **Then, on the server:**
 
@@ -141,6 +146,56 @@ steps.
 **You do not need** a domain name, a static IP, port forwarding, any firewall
 changes, or root access beyond installing Docker itself. Nothing is exposed to the
 internet.
+
+## Starting from a fresh Debian VM
+
+If you have just clicked through the Debian installer and have nothing else set up,
+this script takes you from there to ready-for-ArmoryHub in one run. It updates the
+system, installs `sudo`, `curl`, `ca-certificates` and SSH, installs Docker Engine
+with the Compose plugin, and adds your user to both the `sudo` and `docker` groups.
+
+That last part is the one worth having done for you. Installing Docker and then
+finding `docker ps` refuses to run without `sudo` is the single most common way a
+self-host install stalls, and the fix — add yourself to the `docker` group, then log
+out and back in so it takes effect — is easy to get half-right.
+
+**It is optional, and nothing runs it for you.** Installing ArmoryHub never invokes
+it — it is here as a convenience for people who would rather not assemble the steps
+themselves, and skipping it entirely is a perfectly normal way to install.
+
+It must run as **root**, because a fresh Debian install has no `sudo` yet. That is
+part of what it fixes. Root is also exactly why you should read it first:
+**[bootstrap-debian.sh](bootstrap-debian.sh)** is in this repo, about a hundred
+lines, and every step is commented. Read it there, or download it and read it
+locally — do not take our word for what it does.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/marcjwrigg/armoryhub-selfhost-install/main/bootstrap-debian.sh -o bootstrap-debian.sh
+less bootstrap-debian.sh          # read it — you are about to run it as root
+su -                              # enter the root password
+bash bootstrap-debian.sh <your-username>
+```
+
+Downloaded and read, then run as a separate deliberate step — deliberately not a
+`curl ... | sh` one-liner. Piping a root-privileged script straight from the
+internet into a shell means running something you never saw.
+
+Pass your everyday login name, not `root` — that is the account that gets the group
+memberships, and the account you should install ArmoryHub as.
+
+**Then log out and back in.** Group changes only apply to new sessions, so until you
+do, `docker` still fails and it looks like the script did not work. Check it took:
+
+```bash
+docker run hello-world
+```
+
+Then carry on with [Install (one command)](#install-one-command) as your normal user.
+
+It is safe to re-run, it skips Docker if Docker is already installed, and it works on
+Ubuntu and the other Debian derivatives too. If you are on something else, install
+Docker via <https://docs.docker.com/engine/install/> and add yourself to the
+`docker` group by hand.
 
 ## Install (one command)
 

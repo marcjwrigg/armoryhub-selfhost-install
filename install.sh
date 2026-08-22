@@ -36,9 +36,23 @@ say '================================'
 say ''
 
 # --- prerequisites -----------------------------------------------------------
-command -v docker >/dev/null 2>&1 || die 'Docker is not installed. See https://docs.docker.com/engine/install/'
+command -v docker >/dev/null 2>&1 || die 'Docker is not installed.
+
+    On a fresh Debian or Ubuntu machine there is an optional script that sets
+    up the system, Docker and your user groups in one go. It runs as root, so
+    read it before you run it — it is a single short file:
+
+      https://github.com/marcjwrigg/armoryhub-selfhost-install/blob/main/bootstrap-debian.sh
+
+    Nothing here runs it for you. The instructions are in that page.
+
+    Or install Docker yourself: https://docs.docker.com/engine/install/'
 docker info >/dev/null 2>&1 || die 'Docker is installed but not usable by this user.
-    Try:  sudo usermod -aG docker $USER   (then log out and back in)
+    Try:  sudo usermod -aG docker '"$(id -un)"'   (then log out and back in)
+
+    The log out and back in is the part people miss — the group does not
+    apply to a session that was already open.
+
     Or re-run this installer with sudo.'
 docker compose version >/dev/null 2>&1 || die 'The Docker Compose plugin is missing.
     See https://docs.docker.com/compose/install/'
