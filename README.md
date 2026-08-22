@@ -23,7 +23,9 @@ credentials, and no build step required to install.
 > From then on `armoryhub update` keeps itself current and `armoryhub doctor` reports
 > your version and whether it is the latest. New installs need none of this.
 
-**Three ways in. They are alternatives, not steps — pick the one that sounds like you.**
+# Three ways in
+
+They are alternatives, not steps — pick the one that sounds like you.
 
 **[Not My First Rodeo](#not-my-first-rodeo--the-one-command-install)** — the one-command install
 
