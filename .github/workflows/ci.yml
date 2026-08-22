@@ -1,0 +1,197 @@
+# Checks on the published install configuration.
+#
+# This repo is generated: publish-install-config.sh copies the scripts in from the
+# source repo and rewrites docker-compose.yml on the way (pins the image version,
+# renames files in the comments, embeds the app icon). Those rewrites are exactly
+# what CI in the source repo cannot see, so this runs the same checks against the
+# bytes people actually download.
+#
+# It is also here to be looked at. Installing this means running a shell script on
+# your own machine, and "the scripts are linted and every supported configuration is
+# validated on every change" is a claim you should be able to check rather than take
+# on trust.
+#
+# Static only — nothing is started, no image is pulled, and a run takes well under a
+# minute.
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  shellcheck:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # SC2016 is excluded deliberately. These scripts print commands for you to
+      # paste, and those contain a literal $USER or $(command -v ...) that must not
+      # expand when echoed.
+      - name: lint every shipped script
+        run: |
+          shellcheck --version
+          shellcheck -e SC2016 install.sh armoryhub bootstrap-debian.sh
+
+      # install.sh and armoryhub declare #!/bin/sh, so they have to stay POSIX: on a
+      # minimal Debian /bin/sh is dash, not bash.
+      - name: POSIX syntax check
+        run: |
+          sh -n install.sh
+          sh -n armoryhub
+          bash -n bootstrap-debian.sh
+
+  compose:
+    name: compose config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: set up fixtures
+        run: |
+          cat > .ci.env <<'EOF'
+          POSTGRES_PASSWORD=ci-test-password
+          MIGRATOR_DB_PASSWORD=ci-test-password
+          APP_DB_PASSWORD=ci-test-password
+          AUTH_JWT_SECRET=ci-test-secret-long-enough-for-anything
+          APP_PORT=8477
+          APP_URL=http://localhost:8477
+          EOF
+
+      # `docker compose config` is parse and interpolation only, so no daemon is
+      # needed. Every shape the README documents has to work.
+      - name: every documented configuration parses
+        run: |
+          fail=0
+          check() {
+            name="$1"; profiles="$2"; extra="${3:-}"
+            cp .ci.env run.env
+            if [ -n "$extra" ]; then printf '%s\n' "$extra" >> run.env; fi
+            if COMPOSE_PROFILES="$profiles" docker compose --env-file run.env config >/dev/null 2>/tmp/err; then
+              echo "  ok    $name"
+            else
+              echo "  FAIL  $name"; sed 's/^/        /' /tmp/err; fail=1
+            fi
+          }
+
+          check default   ""
+          check tailscale "tailscale"
+          check caddy     "caddy" 'CADDY_SITE_ADDRESS=armory.example.com
+          CADDY_ACME_EMAIL=ci@example.com'
+          check proxy     "" 'APP_BIND=0.0.0.0
+          APP_URL=https://armory.example.com'
+
+          [ "$fail" -eq 0 ]
+
+      # The optional services are profile-gated. If that gating breaks they either
+      # start for everyone or never start at all, and the second reads as a broken
+      # HTTPS address rather than a missing container.
+      - name: profiles gate the right services
+        run: |
+          services() { COMPOSE_PROFILES="$1" docker compose --env-file .ci.env config --services | sort | tr '\n' ' '; }
+
+          echo "  default:   $(services '')"
+          echo "  tailscale: $(services 'tailscale')"
+          echo "  caddy:     $(services 'caddy')"
+
+          [ -n "$(services '')" ] || { echo "compose config produced no services at all"; exit 1; }
+
+          if services '' | grep -qw tailscale; then
+            echo "tailscale starts by default — it must be profile-gated"; exit 1
+          fi
+          if services '' | grep -qw caddy; then
+            echo "caddy starts by default — it must be profile-gated"; exit 1
+          fi
+          services 'tailscale' | grep -qw tailscale || { echo "the tailscale profile does not include it"; exit 1; }
+          services 'caddy'     | grep -qw caddy     || { echo "the caddy profile does not include it"; exit 1; }
+          echo "  ok    profiles gate correctly"
+
+      # The app binds to loopback unless you ask otherwise. A regression here would
+      # publish an unencrypted login page to your whole network.
+      - name: the app port stays on loopback unless asked otherwise
+        run: |
+          bind() { docker compose --env-file "$1" config | grep -m1 'host_ip:' | tr -d ' '; }
+
+          cp .ci.env loopback.env
+          cp .ci.env exposed.env
+          echo 'APP_BIND=0.0.0.0' >> exposed.env
+
+          echo "  default:      $(bind loopback.env)"
+          echo "  APP_BIND set: $(bind exposed.env)"
+
+          [ "$(bind loopback.env)" = "host_ip:127.0.0.1" ] \
+            || { echo "default bind is NOT loopback — this would expose the app to the network"; exit 1; }
+          [ "$(bind exposed.env)" = "host_ip:0.0.0.0" ] \
+            || { echo "APP_BIND=0.0.0.0 did not take effect — reverse-proxy installs would break"; exit 1; }
+          echo "  ok    loopback by default, 0.0.0.0 only on request"
+
+      # The compose file refuses to run without its secrets, which is what stops an
+      # install coming up with a blank database password.
+      - name: missing secrets are rejected
+        run: |
+          printf 'POSTGRES_PASSWORD=only-this-one\n' > incomplete.env
+          if docker compose --env-file incomplete.env config >/dev/null 2>&1; then
+            echo "compose accepted a config with no AUTH_JWT_SECRET — the :? guards are gone"
+            exit 1
+          fi
+          echo "  ok    an incomplete .env is refused"
+
+      # Only this repo can catch this. The version is pinned by the publish step, so
+      # a failure in that rewrite ships a compose file pointing at :latest — or at a
+      # tag that was never built.
+      - name: the image version is pinned to a real release
+        run: |
+          PINNED=$(grep -m1 -oE 'armoryhub-selfhost:\$\{ARMORYHUB_VERSION:-[^}]+\}' docker-compose.yml \
+                   | sed 's/.*:-//')
+          echo "  pinned: ${PINNED:-<none>}"
+
+          [ -n "$PINNED" ] || { echo "no version pin found in docker-compose.yml"; exit 1; }
+          [ "$PINNED" != "latest" ] \
+            || { echo "pinned to 'latest' — installs would not be reproducible"; exit 1; }
+          case "$PINNED" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "pin '$PINNED' is not a version number"; exit 1 ;;
+          esac
+          echo "  ok    pinned to a specific version"
+
+  installer:
+    name: installer behaviour
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Options are parsed before any prerequisite check, so this needs no Docker.
+      #
+      # Output is captured and grepped separately rather than piping install.sh into
+      # grep: each of these exits non-zero by design, and under `set -o pipefail`
+      # that fails the pipeline even when grep matches.
+      - name: option parsing and validation
+        run: |
+          expect() {
+            desc="$1"; pattern="$2"; shift 2
+            out=$(sh install.sh "$@" 2>&1 || true)
+            if printf '%s' "$out" | grep -q "$pattern"; then
+              echo "  ok    $desc"
+            else
+              echo "  FAIL  $desc — expected /$pattern/, got:"
+              printf '%s\n' "$out" | sed 's/^/        /'
+              exit 1
+            fi
+          }
+
+          expect "--help documents --reverse-proxy" 'reverse-proxy'    --help
+          expect "http:// is refused"               'must be an https' --reverse-proxy http://x.example.com
+          expect "a scheme-less URL is refused"     'full URL'         --reverse-proxy example.com
+          expect "an unknown option is refused"     'Unknown option'   --nonsense-flag
+          expect "a missing option value is caught" 'needs a URL'      --reverse-proxy
+
+      # bootstrap-debian.sh runs as root and modifies group membership, so its guards
+      # are the difference between a helpful script and a destructive one.
+      - name: bootstrap guards refuse the dangerous cases
+        run: |
+          out=$(bash bootstrap-debian.sh 2>&1 || true)
+          printf '%s' "$out" | grep -q 'must be run as root' \
+            || { echo "bootstrap did not require root"; printf '%s\n' "$out"; exit 1; }
+          echo "  ok    refuses to run without root"
