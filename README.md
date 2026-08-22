@@ -3,22 +3,42 @@
 Configuration only — the application itself is a container image. No account, no
 credentials, and no build step required to install.
 
-**Pick your starting point.** These three are alternatives, not steps — do one:
+**Three ways in. They are alternatives, not steps — pick the one that sounds like you.**
 
-| If this is you | Start at |
-|---|---|
-| Docker already runs here, `docker ps` works without `sudo`, and Tailscale suits you | [This isn't my first rodeo](#this-isnt-my-first-rodeo) |
-| New to Docker or Tailscale, or starting from a bare machine | [Full installation guide](#full-installation-guide) |
-| You already run nginx, Caddy, Traefik or Nginx Proxy Manager and want your own certificates | [Advanced: your own reverse proxy](#advanced-your-own-reverse-proxy) |
+**[Not My First Rodeo](#not-my-first-rodeo--the-one-command-install)** — the one-command install
 
-Everything after those is reference: day-to-day commands, backups, updating, putting it
-on your phone, and moving an account across from hosted.
+You've run Docker before, you're comfortable in a terminal, and a machine that stays on
+already exists somewhere in your house. You have a Tailscale account or don't mind
+making one, and you're happy to let it handle HTTPS so you don't have to think about
+certificates. One command, one link to click, done in about five minutes.
+
+**[Hold My Hand](#hold-my-hand--the-full-guide)** — the full guide
+
+New to this, or new enough that "install Docker and the Compose plugin" is a sentence
+with several unanswered questions in it. This walks the whole thing: picking a machine,
+setting up a VM if that's your route, getting Docker on it and into the right group,
+creating a Tailscale account and switching on the two toggles that catch everyone.
+There's a bootstrap script that does the Docker part for you on a bare Debian or Ubuntu
+box. It assumes you have Debian or Ubuntu installed and can log in — everything after
+that is covered.
+
+**[Hold My Beer](#hold-my-beer--reverse-proxies-custom-builds-and-doing-it-your-way)** — reverse proxies, custom builds and doing it your way
+
+You already run nginx or Traefik or Nginx Proxy Manager, you have your own
+certificates, and you have opinions about where the database lives. Tailscale is
+optional and you can skip it entirely. `install.sh` is plain POSIX shell in a public
+repo, so clone it, change it, run your own copy. This section covers the flags, the
+bind addresses, the built-in Caddy profile with your own domain, and converting an
+existing install.
+
+Everything after those three is reference: day-to-day commands, backups, updating,
+putting it on your phone, and moving an account across from hosted.
 
 ## Contents
 
-- [This isn't my first rodeo](#this-isnt-my-first-rodeo)
-- [Full installation guide](#full-installation-guide)
-- [Advanced: your own reverse proxy](#advanced-your-own-reverse-proxy)
+- ["Not My First Rodeo" — the one-command install](#not-my-first-rodeo--the-one-command-install)
+- ["Hold My Hand" — the full guide](#hold-my-hand--the-full-guide)
+- ["Hold My Beer" — reverse proxies, custom builds and doing it your way](#hold-my-beer--reverse-proxies-custom-builds-and-doing-it-your-way)
 - [The armoryhub command](#the-armoryhub-command)
 - [Updating](#updating)
 - [Backups](#backups)
@@ -29,7 +49,7 @@ on your phone, and moving an account across from hosted.
 - [Moving an existing hosted account across](#moving-an-existing-hosted-account-across)
 - [Uninstalling](#uninstalling)
 
-## This isn't my first rodeo
+## "Not My First Rodeo" — the one-command install
 
 What has to be true first:
 
@@ -101,10 +121,10 @@ Next: [the armoryhub command](#the-armoryhub-command) for everyday use, or
 [installing it as an app](#installing-it-as-an-app-on-your-phone-and-computer) on your
 phone and laptop.
 
-## Full installation guide
+## "Hold My Hand" — the full guide
 
 Nothing below assumes you have done any of this before. If you have, the
-[quick version](#this-isnt-my-first-rodeo) is four lines.
+[one-command install](#not-my-first-rodeo--the-one-command-install) is four lines.
 
 ### 1. A machine to run it on
 
@@ -272,7 +292,7 @@ Nothing loads without it, which catches people who set the server up and then tr
 open it on a phone that is not connected yet.
 
 Prefer your own certificates and reverse proxy? You can skip Tailscale entirely —
-see [Advanced](#advanced-your-own-reverse-proxy).
+see [Hold My Beer](#hold-my-beer--reverse-proxies-custom-builds-and-doing-it-your-way).
 
 ### 5. Run the installer
 
@@ -322,7 +342,7 @@ button and use your bookmark. Do not try to fix it by editing the app's Web UI s
 saving that form rewrites your compose file and deletes services. See
 [Running under CasaOS, Portainer or Dockge](#running-under-casaos-portainer-or-dockge).
 
-## Advanced: your own reverse proxy
+## "Hold My Beer" — reverse proxies, custom builds and doing it your way
 
 If you already run nginx, Caddy, Traefik or Nginx Proxy Manager and want to use your
 own certificates, you do not need Tailscale at all. Pass your public HTTPS address and
