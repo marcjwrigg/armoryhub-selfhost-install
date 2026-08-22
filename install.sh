@@ -540,10 +540,29 @@ else
       # Distinguish a TLS problem from a proxy problem. If the certificate itself is
       # fine, HTTPS is working and the fault is between Tailscale and the app — usually
       # just the app still starting, which returns 502 for a few seconds.
+      #
+      # Capture stderr rather than discarding it. This probe used to send the failure
+      # to /dev/null, so the one message that explains what is wrong was thrown away
+      # and the fallthrough below announced that no error had been reported — while
+      # the error sat in the logs the whole time.
       CERT_FINE=""
-      if [ -n "$NAME" ] && docker exec "$TS_CONTAINER" \
-           tailscale cert --cert-file /tmp/_c --key-file /tmp/_k "$NAME" >/dev/null 2>&1; then
-        CERT_FINE=yes
+      CERT_ERR=""
+      if [ -n "$NAME" ]; then
+        if CERT_OUT=$(docker exec "$TS_CONTAINER" \
+             tailscale cert --cert-file /tmp/_c --key-file /tmp/_k "$NAME" 2>&1); then
+          CERT_FINE=yes
+        else
+          CERT_ERR="$CERT_OUT"
+        fi
+      fi
+
+      # The single most common cause, and the one that reads as catastrophic: the
+      # account never had HTTPS Certificates switched on. Everything else installed
+      # perfectly, so without naming this the operator goes looking for a broken app.
+      NOCERT=""
+      if [ -n "$CERT_ERR" ]; then
+        NOCERT=$(printf '%s' "$CERT_ERR" \
+          | grep -i -m1 'does not support getting TLS certs' || true)
       fi
 
       say ''
@@ -574,12 +593,33 @@ else
         say ''
         say '  Until then the app is running but only reachable at'
         say "  http://localhost:${APP_PORT:-8477} from this machine."
+      elif [ -n "$NOCERT" ]; then
+        warn 'HTTPS Certificates are not enabled on your Tailscale account.'
+        say ''
+        say '  One toggle, free on every plan, off by default. Nothing here is broken:'
+        say ''
+        say '    1. https://login.tailscale.com/admin/dns'
+        say '    2. Enable MagicDNS, if it is not already on'
+        say '    3. Enable HTTPS Certificates'
+        say ''
+        say '  Then:'
+        say ''
+        say "    cd $DIR && docker compose --profile tailscale restart tailscale"
+        say ''
+        say '  Everything else installed correctly — the app, the database and the'
+        say '  schema are all fine. Only the certificate is missing.'
       elif [ -n "$LAST_URL" ]; then
         say '  Not approved yet — that is expected if you have not opened the link above.'
         say '  Once you approve the machine, HTTPS starts working within a few seconds.'
         say ''
         say '  If it does not, check for a certificate error with:'
         say "    cd $DIR && docker compose logs tailscale | grep -i cert"
+      elif [ -n "$CERT_ERR" ]; then
+        warn 'The certificate could not be issued. Tailscale said:'
+        say ''
+        printf '%s\n' "$CERT_ERR" | sed 's/^/    /'
+        say ''
+        say "  More context:  cd $DIR && docker compose logs tailscale"
       else
         warn 'HTTPS did not come up, and no certificate error was reported.'
         say "  Check:  cd $DIR && docker compose logs tailscale"

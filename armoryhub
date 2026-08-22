@@ -138,8 +138,12 @@ doctor() {
   [ -n "$PORT" ] || PORT=8477
   HOSTPORT=$(docker port "$APP" 3000 2>/dev/null | head -1 | sed 's/.*://' || true)
   [ -n "$HOSTPORT" ] && PORT="$HOSTPORT"
+  # Remembered, because check 4 needs it: an app answering here is one of the three
+  # facts that together prove HTTPS is fine without being able to probe it directly.
+  APP_LOCAL=fail
   if [ -n "$APP" ] && curl -fsS -o /dev/null -m 10 "http://127.0.0.1:$PORT/api/selfhost/auth/status" 2>/dev/null; then
     ok "app answering on 127.0.0.1:$PORT"
+    APP_LOCAL=ok
   else
     bad "app not answering on 127.0.0.1:$PORT"
     info "see why:  armoryhub logs"
@@ -181,10 +185,26 @@ doctor() {
           info "the limit is per hostname; reinstall with a different one to get a certificate now:"
           info "  curl -fsSL https://armoryhub.app/install.sh | ARMORYHUB_TS_HOSTNAME=armory2 sh"
         elif [ "$CERT" = ok ] && [ "$SERVE" = ok ]; then
-          ok "certificate valid and traffic routed to the app"
-          warn "could not confirm HTTPS from inside the container — this check is unreliable"
-          info "everything needed for HTTPS is in place, so open https://$NAME in a browser"
-          info "and trust that over this check. Probe said: ${PROBE_ERR:-no output}"
+          # Three independent facts — a valid certificate, Tailscale proxying, and the
+          # app answering on loopback — mean HTTPS is working. The only thing left
+          # unproven is the container resolving and looping back to its own public
+          # name, which routinely fails inside a VM while browsers are served fine.
+          #
+          # This used to raise a warning, so a perfectly healthy VM install reported a
+          # problem it did not have, on every single run. An unreliable probe is not
+          # evidence of a fault; say what is actually known instead.
+          if [ "$APP_LOCAL" = ok ]; then
+            ok "HTTPS working — valid certificate, Tailscale routing, app answering"
+            info "the in-container probe could not confirm it end to end, which is normal"
+            info "in a VM: it has to resolve its own MagicDNS name and loop back to itself"
+          else
+            ok "certificate valid and traffic routed to the app"
+            warn "the app is not answering on loopback, so HTTPS could not be confirmed"
+            info "open https://$NAME in a browser and trust that over this check"
+          fi
+          if [ -n "$PROBE_ERR" ]; then
+            info "probe said: $PROBE_ERR"
+          fi
         elif docker logs "$TS" 2>&1 | grep -q 'does not support getting TLS certs' \
              || docker exec "$TS" tailscale cert --cert-file /tmp/_c --key-file /tmp/_k "$NAME" 2>&1 \
                 | grep -q 'does not support getting TLS certs'; then
