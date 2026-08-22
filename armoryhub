@@ -8,7 +8,7 @@
 #   armoryhub backup list|now|verify [stamp]
 #   armoryhub restore <stamp>
 #   armoryhub password        reset the account password
-#   armoryhub update          pull and restart
+#   armoryhub update [ver]    move to the latest version and restart
 #
 # ## Why this exists rather than documenting docker compose commands
 #
@@ -296,7 +296,8 @@ doctor() {
     armoryhub backup verify latest
     armoryhub restore <stamp>     replace data with a backup (confirms first)
     armoryhub password            reset the account password
-    armoryhub update              pull the latest version and restart
+    armoryhub update [version]    move to the latest version and restart
+                                  (a version pins it, e.g. to roll back)
 
 CMDS
   [ "$PROBLEMS" -gt 0 ] && exit 1
@@ -352,9 +353,58 @@ case "$CMD" in
   update)
     [ -d "$DIR" ] || die "install not found at $DIR"
     cd "$DIR"
+
+    # Move the version pin before pulling, or this command cannot do what it says.
+    #
+    # docker-compose.yml pins the image tag, and that file is written once at install
+    # time and never touched again. `docker compose pull` against it therefore re-pulls
+    # the tag already pinned: an instance installed at 0.1.6 stays on 0.1.6 for ever,
+    # while the command reports success and the helper below even updates itself. The
+    # pin is deliberate — it is what makes an install reproducible — but nothing was
+    # ever moving it.
+    #
+    # ARMORYHUB_VERSION in .env is what shifts it. The compose file already reads
+    # ${ARMORYHUB_VERSION:-<pinned>}, .env belongs to the operator rather than being
+    # generated, and writing there leaves any local compose edits — or a dashboard's
+    # rewrite of that file — completely alone.
+    COMPOSE_URL="https://raw.githubusercontent.com/marcjwrigg/armoryhub-selfhost-install/main/docker-compose.yml"
+    CURRENT=$(printf '%s' "${IMAGE:-}" | sed -n 's/.*armoryhub-selfhost://p')
+    TARGET="${1:-}"
+
+    if [ -z "$TARGET" ]; then
+      # What new installs currently get. Authoritative, and one request.
+      TARGET=$(curl -fsSL "$COMPOSE_URL" 2>/dev/null \
+        | sed -n 's/.*armoryhub-selfhost:${ARMORYHUB_VERSION:-\([^}]*\)}.*/\1/p' | head -1)
+      if [ -z "$TARGET" ]; then
+        echo "  could not reach the registry to check for a newer version"
+        echo "  pulling whatever the current pin resolves to instead"
+      fi
+    fi
+
+    if [ -n "$TARGET" ] && [ "$TARGET" != "$CURRENT" ]; then
+      umask 077
+      if grep -q '^ARMORYHUB_VERSION=' .env 2>/dev/null; then
+        sed "s|^ARMORYHUB_VERSION=.*|ARMORYHUB_VERSION=$TARGET|" .env > .env.new \
+          && mv .env.new .env
+      else
+        printf 'ARMORYHUB_VERSION=%s\n' "$TARGET" >> .env
+      fi
+      chmod 600 .env
+      echo "  ${CURRENT:-unknown} -> $TARGET"
+    elif [ -n "$TARGET" ]; then
+      echo "  already on $TARGET"
+    fi
+
     docker compose pull
     docker compose down --remove-orphans
     docker compose up -d
+
+    # if/fi rather than `[ -n "$NOW" ] && echo`: under set -e a false test as the last
+    # statement here would take the script down and skip the helper self-update below.
+    NOW=$(docker compose images app 2>/dev/null | sed -n 's/.*armoryhub-selfhost  *\([^ ]*\).*/\1/p' | head -1)
+    if [ -n "$NOW" ]; then
+      echo "  running $NOW"
+    fi
 
     # Update this script too. `docker compose pull` refreshes the image; this file
     # lives on the host and nothing else would ever replace it, so without this the

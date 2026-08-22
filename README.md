@@ -541,11 +541,35 @@ docker exec -it $(docker ps -q -f name=armoryhub.*app) node reset-password.js
 armoryhub update
 ```
 
-That pulls the new image, restarts everything, and updates the `armoryhub` command
-itself. A backup is taken before any database changes are applied, and the upgrade
-aborts if that backup fails.
+That checks what the current release is, moves your install to it, restarts everything,
+and updates the `armoryhub` command itself. A backup is taken before any database
+changes are applied, and the upgrade aborts if that backup fails.
 
-Check afterwards with `armoryhub doctor`.
+It prints what it did — `0.1.6 -> 0.1.7`, or `already on 0.1.7` — so you can tell the
+difference between an upgrade and a no-op. Confirm with `armoryhub doctor`.
+
+**How the version is pinned**, because it explains what you will see in `.env`. Your
+`docker-compose.yml` pins an image tag, fixed at the moment you installed, so that an
+install is reproducible and you can always tell what you are running. Updating sets
+`ARMORYHUB_VERSION` in `.env`, which the compose file reads in preference to that
+pin. Nothing rewrites `docker-compose.yml`, so local edits to it survive.
+
+To move to a specific version, or to go back to one:
+
+```bash
+armoryhub update 0.1.6
+```
+
+Downgrades are not generally safe once a release has changed the database — check the
+release notes before going backwards.
+
+```bash
+docker compose pull && docker compose down && docker compose up -d
+```
+
+is the equivalent by hand, but on its own it re-pulls the tag already pinned in your
+compose file and leaves you exactly where you were. Set `ARMORYHUB_VERSION` in `.env`
+first if you are doing it this way.
 
 ## Backups
 
