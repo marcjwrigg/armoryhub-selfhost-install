@@ -13,6 +13,12 @@
 # It does not need root, it asks you nothing, and it changes nothing outside
 # ~/armoryhub. Re-running it on an existing install stops rather than overwriting.
 #
+# Already run your own reverse proxy? Step 4 is skipped entirely:
+#
+#   curl -fsSL https://armoryhub.app/install.sh | sh -s -- --reverse-proxy https://armory.example.com
+#
+# Run with --help for every option.
+#
 # Set ARMORYHUB_DIR to install somewhere other than ~/armoryhub.
 #
 # Set ARMORYHUB_TS_HOSTNAME to choose the name your instance gets on your private
@@ -29,6 +35,89 @@ say()  { printf '%s\n' "$*"; }
 ok()   { printf '  \033[32m✓\033[0m %s\n' "$*"; }
 warn() { printf '  \033[33m!\033[0m %s\n' "$*"; }
 die()  { printf '\n  \033[31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
+
+# --- options -------------------------------------------------------------------
+# Parsed before anything else, so --help costs nothing and a typo fails immediately
+# rather than after directories have been created.
+#
+# Both forms work, because the advertised install is a pipe:
+#
+#   curl -fsSL https://armoryhub.app/install.sh | sh -s -- --reverse-proxy https://a.example.com
+#   curl -fsSL https://armoryhub.app/install.sh | ARMORYHUB_REVERSE_PROXY=https://a.example.com sh
+#
+# `sh -s --` is what lets a piped script take arguments at all: without -s, the shell
+# treats the first argument as a filename to run and the install silently does nothing.
+# The environment form exists because that is easy to get wrong.
+REVERSE_PROXY="${ARMORYHUB_REVERSE_PROXY:-}"
+BIND_OVERRIDE="${ARMORYHUB_APP_BIND:-}"
+
+usage() {
+  cat <<'USAGE'
+ArmoryHub self-hosted installer
+
+  curl -fsSL https://armoryhub.app/install.sh | sh
+
+Options:
+  --reverse-proxy URL   You already run a reverse proxy and your own certificates.
+                        Skips Tailscale entirely, sets APP_URL to this address, and
+                        publishes the app port so your proxy can reach it. Must be
+                        the public https:// URL you will serve.
+  --bind ADDRESS        Address the app port is published on. Defaults to 0.0.0.0
+                        with --reverse-proxy, 127.0.0.1 otherwise. Pass
+                        --bind 127.0.0.1 if your proxy runs on this host in host
+                        network mode, or is attached to this stack's network.
+  -h, --help            This.
+
+Environment (equivalent, for the piped install):
+  ARMORYHUB_DIR             Install location. Default: ~/armoryhub
+  ARMORYHUB_TS_HOSTNAME     Name on your tailnet. Default: armoryhub
+  ARMORYHUB_REVERSE_PROXY   Same as --reverse-proxy
+  ARMORYHUB_APP_BIND        Same as --bind
+USAGE
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --reverse-proxy)
+      [ $# -ge 2 ] || die '--reverse-proxy needs a URL, e.g. --reverse-proxy https://armory.example.com'
+      REVERSE_PROXY="$2"; shift 2 ;;
+    --reverse-proxy=*)
+      REVERSE_PROXY="${1#--reverse-proxy=}"; shift ;;
+    --bind)
+      [ $# -ge 2 ] || die '--bind needs an address, e.g. --bind 127.0.0.1'
+      BIND_OVERRIDE="$2"; shift 2 ;;
+    --bind=*)
+      BIND_OVERRIDE="${1#--bind=}"; shift ;;
+    -h|--help)
+      usage; exit 0 ;;
+    *)
+      usage >&2
+      die "Unknown option: $1" ;;
+  esac
+done
+
+# Validated up front rather than at the point of use, so a typo costs nothing.
+#
+# https is required rather than fussiness: browsers withhold the Web Crypto the app
+# depends on from insecure origins, so an http:// APP_URL produces an instance you can
+# sign in to and then cannot unlock. That is the worst outcome this installer can hand
+# someone, because everything looks healthy right up until the data will not open.
+if [ -n "$REVERSE_PROXY" ]; then
+  case "$REVERSE_PROXY" in
+    https://*) ;;
+    http://*)
+      die "--reverse-proxy must be an https:// URL, not http://
+
+    Browsers only allow the encryption ArmoryHub needs over HTTPS, so with a plain
+    http:// address you would be able to sign in and then fail to unlock your data.
+    Terminate TLS at your proxy and pass the https:// address it serves." ;;
+    *)
+      die "--reverse-proxy needs a full URL including the scheme:
+
+      --reverse-proxy https://armory.example.com" ;;
+  esac
+  REVERSE_PROXY="${REVERSE_PROXY%/}"   # a trailing slash would double up in links
+fi
 
 say ''
 say 'ArmoryHub — self-hosted install'
@@ -97,6 +186,22 @@ ok "install directory: $DIR"
 curl -fsSL "$RAW/docker-compose.yml" -o docker-compose.yml || die 'Could not download docker-compose.yml'
 ok 'downloaded docker-compose.yml'
 
+# The two supported shapes, resolved here so the .env template below stays free of
+# conditionals. Tailscale is the default because it needs nothing from the operator;
+# the proxy path assumes they have already solved TLS themselves.
+if [ -n "$REVERSE_PROXY" ]; then
+  ENV_APP_URL="$REVERSE_PROXY"
+  # 0.0.0.0 by default because the common case — Nginx Proxy Manager, Traefik, or any
+  # proxy in a Docker bridge network — cannot reach the host's loopback. A proxy in
+  # host network mode can, and should use --bind 127.0.0.1 instead.
+  ENV_BIND="${BIND_OVERRIDE:-0.0.0.0}"
+  ENV_PROFILES=""
+else
+  ENV_APP_URL="http://localhost:8477"
+  ENV_BIND="${BIND_OVERRIDE:-127.0.0.1}"
+  ENV_PROFILES="tailscale"
+fi
+
 # Every value below is generated for you. Nothing here needs editing to get started,
 # but you can change any of it later and restart with:
 #   docker compose down && docker compose up -d
@@ -111,7 +216,13 @@ APP_DB_PASSWORD=$(gen 32 32)
 AUTH_JWT_SECRET=$(gen 48 64)
 
 APP_PORT=8477
-APP_URL=http://localhost:8477
+
+# Which addresses the app port is published on. 127.0.0.1 means only this machine can
+# reach it, so nobody on your network can hit an unencrypted login page. 0.0.0.0 opens
+# it to everything, and is only safe with a TLS-terminating proxy in front.
+APP_BIND=$ENV_BIND
+
+APP_URL=$ENV_APP_URL
 ALLOW_INSECURE_COOKIES=false
 
 REALTIME_POLL_MS=30000
@@ -126,8 +237,9 @@ BACKUP_KEEP_WEEKLY=4
 # has been stopped for any reason, a plain 'up -d' leaves it down and your HTTPS
 # address quietly stops resolving, which looks like the app itself being broken.
 #
-# Change this to 'caddy' if you switch to a public domain instead.
-COMPOSE_PROFILES=tailscale
+# Empty means no sidecar at all, which is what --reverse-proxy sets: you are handling
+# TLS yourself. Set it to 'caddy' to use the bundled Caddy with a public domain.
+COMPOSE_PROFILES=$ENV_PROFILES
 
 # --- HTTPS -------------------------------------------------------------------
 # The installer starts Tailscale for you and prints a link to approve this machine.
@@ -212,223 +324,266 @@ if [ "$i" -ge 60 ]; then
     cd $DIR && docker compose logs app"
 fi
 
-# --- HTTPS -------------------------------------------------------------------
-# Sets up HTTPS now rather than leaving it to you. This prints a link that you open
-# to approve the machine — there is no key to create first.
+# --- HTTPS ---------------------------------------------------------------------
+# Two paths from here.
 #
-# For an unattended install, put a reusable TS_AUTHKEY in .env before running and
-# it registers without prompting.
-say ''
-say '  Setting up HTTPS...'
-say ''
-say '  This is required, not optional: browsers only allow the encryption ArmoryHub'
-say '  needs over HTTPS or on localhost. Without it you can sign in but not unlock'
-say '  your data.'
-say ''
-
-if ! docker compose --profile tailscale up -d >/dev/null 2>&1; then
-  warn 'Could not start the Tailscale sidecar.'
-  warn "Start it later with:  cd $DIR && docker compose --profile tailscale up -d"
-  exit 0
-fi
-ok 'Tailscale sidecar started'
-
-TS_CONTAINER=""
-i=0
-while [ "$i" -lt 20 ]; do
-  TS_CONTAINER=$(docker compose ps -q tailscale 2>/dev/null || true)
-  [ -n "$TS_CONTAINER" ] && break
-  i=$((i + 1)); sleep 2
-done
-
-# Approving the machine is a race, and the installer has to run it rather than hope.
-#
-# While a node sits unauthenticated, the tailscale container re-registers itself about
-# once a minute (measured on a test machine: five regenerations, ~60s apart). Every
-# re-registration mints a new node key and a NEW approval link, silently invalidating
-# the one already on screen. Anyone who reads the message, then goes to find their
-# password manager, misses the window — and the symptom is an approval link that
-# simply does nothing, followed by a node in the admin console whose "last seen"
-# equals its creation time.
-#
-# So: print the link, watch for it to change, and reprint it when it does.
-
-ts_field() {
-  [ -n "$TS_CONTAINER" ] || return 1
-  docker exec "$TS_CONTAINER" tailscale status --json 2>/dev/null \
-    | grep -m1 "\"$1\"" | cut -d'"' -f4
-}
-
-APPROVE_WINDOW=75   # the link lives ~60s; allow a buffer before assuming it rotated
-APPROVE_ROUNDS=5    # give up after ~6 minutes and explain the auth-key path
-TS_NAME=""
-LAST_URL=""
-round=1
-
-say ''
-while [ "$round" -le "$APPROVE_ROUNDS" ]; do
-  STATE=$(ts_field BackendState || true)
-
-  if [ "$STATE" = "Running" ]; then
-    TS_NAME=$(ts_field DNSName | sed 's/\.$//' || true)
-    break
-  fi
-
-  URL=$(ts_field AuthURL || true)
-  if [ -n "$URL" ] && [ "$URL" != "$LAST_URL" ]; then
-    LAST_URL="$URL"
-    say '  ============================================================'
-    if [ "$round" -eq 1 ]; then
-      say '   ONE STEP LEFT — approve this machine:'
-    else
-      say "   That link expired. Here is a fresh one (attempt $round):"
-    fi
+# With --reverse-proxy the operator already terminates TLS somewhere else, so there
+# is no sidecar to start, no machine to approve and no certificate to wait for. The
+# entire Tailscale phase is skipped rather than started and then unwound.
+if [ -n "$REVERSE_PROXY" ]; then
+  say ''
+  ok "configured for your own reverse proxy"
+  say ''
+  say '  Tailscale was not started and no certificate was requested — you are'
+  say '  handling both.'
+  say ''
+  say '  Point your proxy at this machine:'
+  say ''
+  if [ "$ENV_BIND" = "127.0.0.1" ]; then
+    say "    http://127.0.0.1:${APP_PORT:-8477}"
     say ''
-    say "     $URL"
-    say ''
-    say '   This link is only valid for about a minute. If you miss it, leave this'
-    say '   running — a new one is printed automatically.'
-    say '  ============================================================'
+    say '  Loopback only, so the proxy has to be on this host in host network mode.'
+  else
+    say "    http://<this-machine>:${APP_PORT:-8477}"
   fi
+  say ''
+  say "  and serve it as:  $REVERSE_PROXY"
+  say ''
+  if [ "$ENV_BIND" = "0.0.0.0" ]; then
+    warn 'The app port is open on every interface (APP_BIND=0.0.0.0).'
+    say ''
+    say '  That is what lets a proxy in a Docker bridge network, or on another'
+    say '  machine, reach it. Until your proxy is actually in front of it, anyone'
+    say "  on this network can reach an unencrypted login page on port ${APP_PORT:-8477}."
+    say ''
+    say '  If your proxy runs on this host in host network mode, tighten it:'
+    say ''
+    say "    cd $DIR"
+    say '    sed -i "s|^APP_BIND=.*|APP_BIND=127.0.0.1|" .env'
+    say '    docker compose up -d'
+    say ''
+  fi
+  say '  Terminate TLS at the proxy. Browsers only allow the encryption ArmoryHub'
+  say '  needs over HTTPS, so a plain http:// address lets you sign in and then'
+  say '  fails to unlock your data.'
+else
+  # Sets up HTTPS now rather than leaving it to you. This prints a link that you open
+  # to approve the machine — there is no key to create first.
+  #
+  # For an unattended install, put a reusable TS_AUTHKEY in .env before running and
+  # it registers without prompting.
+  say ''
+  say '  Setting up HTTPS...'
+  say ''
+  say '  This is required, not optional: browsers only allow the encryption ArmoryHub'
+  say '  needs over HTTPS or on localhost. Without it you can sign in but not unlock'
+  say '  your data.'
+  say ''
 
-  # Poll inside the window so approval is noticed within seconds, not at the end.
-  waited=0
-  while [ "$waited" -lt "$APPROVE_WINDOW" ]; do
-    sleep 5
-    waited=$((waited + 5))
-    if [ "$(ts_field BackendState || true)" = "Running" ]; then break; fi
+  if ! docker compose --profile tailscale up -d >/dev/null 2>&1; then
+    warn 'Could not start the Tailscale sidecar.'
+    warn "Start it later with:  cd $DIR && docker compose --profile tailscale up -d"
+    exit 0
+  fi
+  ok 'Tailscale sidecar started'
+
+  TS_CONTAINER=""
+  i=0
+  while [ "$i" -lt 20 ]; do
+    TS_CONTAINER=$(docker compose ps -q tailscale 2>/dev/null || true)
+    [ -n "$TS_CONTAINER" ] && break
+    i=$((i + 1)); sleep 2
   done
 
-  round=$((round + 1))
-done
-
-say ''
-if [ -n "$TS_NAME" ]; then
-  ok "Tailscale approved: $TS_NAME"
-
-  # Point the dashboard app-card icon at this instance now that we know its address.
+  # Approving the machine is a race, and the installer has to run it rather than hope.
   #
-  # The published compose file ships the icon embedded as a data: URI, because at
-  # publish time nobody knows what this machine will be called. That always works but
-  # is only 96px. Now that Tailscale has registered we know the real hostname, so we
-  # can point at the full-size icon the app already serves — still entirely on your own
-  # network, still no third-party fetch.
+  # While a node sits unauthenticated, the tailscale container re-registers itself about
+  # once a minute (measured on a test machine: five regenerations, ~60s apart). Every
+  # re-registration mints a new node key and a NEW approval link, silently invalidating
+  # the one already on screen. Anyone who reads the message, then goes to find their
+  # password manager, misses the window — and the symptom is an approval link that
+  # simply does nothing, followed by a node in the admin console whose "last seen"
+  # equals its creation time.
   #
-  # Only swapped when Tailscale is in use. Anyone behind their own reverse proxy keeps
-  # the embedded copy, which needs no address at all.
-  #
-  # sed to a temp file and rename, rather than sed -i: -i is a GNU/BSD extension and
-  # its argument handling differs between them.
-  if grep -q '^  icon: data:image/png' docker-compose.yml 2>/dev/null; then
-    if sed "s|^  icon: data:image/png.*|  icon: https://$TS_NAME/apple-touch-icon.png|" \
-         docker-compose.yml > docker-compose.yml.tmp 2>/dev/null \
-       && mv docker-compose.yml.tmp docker-compose.yml; then
-      ok "app icon set to https://$TS_NAME/apple-touch-icon.png"
-    else
-      rm -f docker-compose.yml.tmp
-    fi
-  fi
-else
-  warn 'The machine was not approved in time.'
-  say ''
-  say '  Nothing is broken — the app is running, it just has no HTTPS address yet.'
-  say '  Get the current link any time with:'
-  say "    docker exec \$(docker ps -q -f name=tailscale) tailscale status"
-  say ''
-  say '  If you keep missing the window, use an auth key instead. It authenticates'
-  say '  on boot, so there is no link and no timing to get right:'
-  say ''
-  say '    1. Create a REUSABLE, non-ephemeral key at'
-  say '       https://login.tailscale.com/admin/settings/keys'
-  say "    2. echo 'TS_AUTHKEY=tskey-auth-...' >> $DIR/.env"
-  say "    3. cd $DIR && docker rm -f \$(docker ps -q -f name=tailscale) && docker compose up -d"
-fi
+  # So: print the link, watch for it to change, and reprint it when it does.
 
-# Wait for the certificate, and say what went wrong if it does not arrive.
-#
-# Without this the installer prints a URL and exits, and any certificate failure
-# reaches the operator as a blank page with an empty browser console — no error, no
-# clue, and nothing that points at TLS. That is the single worst failure mode this
-# script has, because everything else looks healthy: containers up, app answering on
-# loopback, Tailscale connected.
-#
-# Certificates are issued on demand, on the first HTTPS request, so this makes that
-# request rather than waiting to be surprised later.
-if [ -n "$TS_CONTAINER" ]; then
+  ts_field() {
+    [ -n "$TS_CONTAINER" ] || return 1
+    docker exec "$TS_CONTAINER" tailscale status --json 2>/dev/null \
+      | grep -m1 "\"$1\"" | cut -d'"' -f4
+  }
+
+  APPROVE_WINDOW=75   # the link lives ~60s; allow a buffer before assuming it rotated
+  APPROVE_ROUNDS=5    # give up after ~6 minutes and explain the auth-key path
+  TS_NAME=""
+  LAST_URL=""
+  round=1
+
   say ''
-  printf '  Waiting for the HTTPS certificate'
-  CERT_OK=""
-  i=0
-  while [ "$i" -lt 30 ]; do
-    NAME=$(docker exec "$TS_CONTAINER" tailscale status --json 2>/dev/null \
-      | grep -m1 '"DNSName"' | cut -d'"' -f4 | sed 's/\.$//' || true)
-    if [ -n "$NAME" ] && docker exec "$TS_CONTAINER" \
-         wget -q -T 8 -O /dev/null "https://$NAME/api/selfhost/auth/status" 2>/dev/null; then
-      CERT_OK=yes
+  while [ "$round" -le "$APPROVE_ROUNDS" ]; do
+    STATE=$(ts_field BackendState || true)
+
+    if [ "$STATE" = "Running" ]; then
+      TS_NAME=$(ts_field DNSName | sed 's/\.$//' || true)
       break
     fi
-    printf '.'
-    i=$((i + 1)); sleep 4
-  done
-  printf '\n'
 
-  if [ -n "$CERT_OK" ]; then
-    ok "HTTPS working: https://$NAME"
-    say ''
-    say '  ============================================================'
-    say "   Open:  https://$NAME"
-    say '  ============================================================'
-  else
-    # Distinguish "not approved yet" from a real certificate failure, because the
-    # remedies are completely different.
-    RATE=$(docker logs "$TS_CONTAINER" 2>&1 | grep -oE 'too many certificates.*retry after [0-9: -]+UTC' | tail -1 || true)
-
-    # Distinguish a TLS problem from a proxy problem. If the certificate itself is
-    # fine, HTTPS is working and the fault is between Tailscale and the app — usually
-    # just the app still starting, which returns 502 for a few seconds.
-    CERT_FINE=""
-    if [ -n "$NAME" ] && docker exec "$TS_CONTAINER" \
-         tailscale cert --cert-file /tmp/_c --key-file /tmp/_k "$NAME" >/dev/null 2>&1; then
-      CERT_FINE=yes
+    URL=$(ts_field AuthURL || true)
+    if [ -n "$URL" ] && [ "$URL" != "$LAST_URL" ]; then
+      LAST_URL="$URL"
+      say '  ============================================================'
+      if [ "$round" -eq 1 ]; then
+        say '   ONE STEP LEFT — approve this machine:'
+      else
+        say "   That link expired. Here is a fresh one (attempt $round):"
+      fi
+      say ''
+      say "     $URL"
+      say ''
+      say '   This link is only valid for about a minute. If you miss it, leave this'
+      say '   running — a new one is printed automatically.'
+      say '  ============================================================'
     fi
 
+    # Poll inside the window so approval is noticed within seconds, not at the end.
+    waited=0
+    while [ "$waited" -lt "$APPROVE_WINDOW" ]; do
+      sleep 5
+      waited=$((waited + 5))
+      if [ "$(ts_field BackendState || true)" = "Running" ]; then break; fi
+    done
+
+    round=$((round + 1))
+  done
+
+  say ''
+  if [ -n "$TS_NAME" ]; then
+    ok "Tailscale approved: $TS_NAME"
+
+    # Point the dashboard app-card icon at this instance now that we know its address.
+    #
+    # The published compose file ships the icon embedded as a data: URI, because at
+    # publish time nobody knows what this machine will be called. That always works but
+    # is only 96px. Now that Tailscale has registered we know the real hostname, so we
+    # can point at the full-size icon the app already serves — still entirely on your own
+    # network, still no third-party fetch.
+    #
+    # Only swapped when Tailscale is in use. Anyone behind their own reverse proxy keeps
+    # the embedded copy, which needs no address at all.
+    #
+    # sed to a temp file and rename, rather than sed -i: -i is a GNU/BSD extension and
+    # its argument handling differs between them.
+    if grep -q '^  icon: data:image/png' docker-compose.yml 2>/dev/null; then
+      if sed "s|^  icon: data:image/png.*|  icon: https://$TS_NAME/apple-touch-icon.png|" \
+           docker-compose.yml > docker-compose.yml.tmp 2>/dev/null \
+         && mv docker-compose.yml.tmp docker-compose.yml; then
+        ok "app icon set to https://$TS_NAME/apple-touch-icon.png"
+      else
+        rm -f docker-compose.yml.tmp
+      fi
+    fi
+  else
+    warn 'The machine was not approved in time.'
     say ''
-    if [ -n "$CERT_FINE" ] && [ -z "$RATE" ]; then
-      ok "Certificate is valid for $NAME"
-      warn 'But the app did not answer through it yet.'
+    say '  Nothing is broken — the app is running, it just has no HTTPS address yet.'
+    say '  Get the current link any time with:'
+    say "    docker exec \$(docker ps -q -f name=tailscale) tailscale status"
+    say ''
+    say '  If you keep missing the window, use an auth key instead. It authenticates'
+    say '  on boot, so there is no link and no timing to get right:'
+    say ''
+    say '    1. Create a REUSABLE, non-ephemeral key at'
+    say '       https://login.tailscale.com/admin/settings/keys'
+    say "    2. echo 'TS_AUTHKEY=tskey-auth-...' >> $DIR/.env"
+    say "    3. cd $DIR && docker rm -f \$(docker ps -q -f name=tailscale) && docker compose up -d"
+  fi
+
+  # Wait for the certificate, and say what went wrong if it does not arrive.
+  #
+  # Without this the installer prints a URL and exits, and any certificate failure
+  # reaches the operator as a blank page with an empty browser console — no error, no
+  # clue, and nothing that points at TLS. That is the single worst failure mode this
+  # script has, because everything else looks healthy: containers up, app answering on
+  # loopback, Tailscale connected.
+  #
+  # Certificates are issued on demand, on the first HTTPS request, so this makes that
+  # request rather than waiting to be surprised later.
+  if [ -n "$TS_CONTAINER" ]; then
+    say ''
+    printf '  Waiting for the HTTPS certificate'
+    CERT_OK=""
+    i=0
+    while [ "$i" -lt 30 ]; do
+      NAME=$(docker exec "$TS_CONTAINER" tailscale status --json 2>/dev/null \
+        | grep -m1 '"DNSName"' | cut -d'"' -f4 | sed 's/\.$//' || true)
+      if [ -n "$NAME" ] && docker exec "$TS_CONTAINER" \
+           wget -q -T 8 -O /dev/null "https://$NAME/api/selfhost/auth/status" 2>/dev/null; then
+        CERT_OK=yes
+        break
+      fi
+      printf '.'
+      i=$((i + 1)); sleep 4
+    done
+    printf '\n'
+
+    if [ -n "$CERT_OK" ]; then
+      ok "HTTPS working: https://$NAME"
       say ''
-      say '  Almost always the app still finishing its first start. Wait a few seconds'
-      say "  and open:  https://$NAME"
-      say ''
-      say '  If it keeps returning 502:'
-      say "    cd $DIR && docker compose logs app"
-    elif [ -n "$RATE" ]; then
-      warn 'HTTPS is blocked by a Let'"'"'s Encrypt rate limit.'
-      say ''
-      say "    $RATE"
-      say ''
-      say '  Five certificates have already been issued for this exact hostname in the'
-      say '  last 7 days, which happens after repeated reinstalls. The limit is per'
-      say '  hostname, so you have two options:'
-      say ''
-      say '    1. Wait until the time above, then:  docker compose up -d'
-      say '    2. Use a different name now:'
-      say "         cd $DIR"
-      say '         sed -i "s|^TS_HOSTNAME=.*|TS_HOSTNAME=armory2|" .env'
-      say '         sed -i "s|^APP_URL=.*|APP_URL=https://armory2.<your-tailnet>.ts.net|" .env'
-      say '         docker compose up -d --force-recreate tailscale'
-      say ''
-      say '  Until then the app is running but only reachable at'
-      say "  http://localhost:${APP_PORT:-8477} from this machine."
-    elif [ -n "$AUTH_URL" ]; then
-      say '  Not approved yet — that is expected if you have not opened the link above.'
-      say '  Once you approve the machine, HTTPS starts working within a few seconds.'
-      say ''
-      say '  If it does not, check for a certificate error with:'
-      say "    cd $DIR && docker compose logs tailscale | grep -i cert"
+      say '  ============================================================'
+      say "   Open:  https://$NAME"
+      say '  ============================================================'
     else
-      warn 'HTTPS did not come up, and no certificate error was reported.'
-      say "  Check:  cd $DIR && docker compose logs tailscale"
+      # Distinguish "not approved yet" from a real certificate failure, because the
+      # remedies are completely different.
+      RATE=$(docker logs "$TS_CONTAINER" 2>&1 | grep -oE 'too many certificates.*retry after [0-9: -]+UTC' | tail -1 || true)
+
+      # Distinguish a TLS problem from a proxy problem. If the certificate itself is
+      # fine, HTTPS is working and the fault is between Tailscale and the app — usually
+      # just the app still starting, which returns 502 for a few seconds.
+      CERT_FINE=""
+      if [ -n "$NAME" ] && docker exec "$TS_CONTAINER" \
+           tailscale cert --cert-file /tmp/_c --key-file /tmp/_k "$NAME" >/dev/null 2>&1; then
+        CERT_FINE=yes
+      fi
+
+      say ''
+      if [ -n "$CERT_FINE" ] && [ -z "$RATE" ]; then
+        ok "Certificate is valid for $NAME"
+        warn 'But the app did not answer through it yet.'
+        say ''
+        say '  Almost always the app still finishing its first start. Wait a few seconds'
+        say "  and open:  https://$NAME"
+        say ''
+        say '  If it keeps returning 502:'
+        say "    cd $DIR && docker compose logs app"
+      elif [ -n "$RATE" ]; then
+        warn 'HTTPS is blocked by a Let'"'"'s Encrypt rate limit.'
+        say ''
+        say "    $RATE"
+        say ''
+        say '  Five certificates have already been issued for this exact hostname in the'
+        say '  last 7 days, which happens after repeated reinstalls. The limit is per'
+        say '  hostname, so you have two options:'
+        say ''
+        say '    1. Wait until the time above, then:  docker compose up -d'
+        say '    2. Use a different name now:'
+        say "         cd $DIR"
+        say '         sed -i "s|^TS_HOSTNAME=.*|TS_HOSTNAME=armory2|" .env'
+        say '         sed -i "s|^APP_URL=.*|APP_URL=https://armory2.<your-tailnet>.ts.net|" .env'
+        say '         docker compose up -d --force-recreate tailscale'
+        say ''
+        say '  Until then the app is running but only reachable at'
+        say "  http://localhost:${APP_PORT:-8477} from this machine."
+      elif [ -n "$LAST_URL" ]; then
+        say '  Not approved yet — that is expected if you have not opened the link above.'
+        say '  Once you approve the machine, HTTPS starts working within a few seconds.'
+        say ''
+        say '  If it does not, check for a certificate error with:'
+        say "    cd $DIR && docker compose logs tailscale | grep -i cert"
+      else
+        warn 'HTTPS did not come up, and no certificate error was reported.'
+        say "  Check:  cd $DIR && docker compose logs tailscale"
+      fi
     fi
   fi
 fi

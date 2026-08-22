@@ -325,43 +325,99 @@ saving that form rewrites your compose file and deletes services. See
 ## Advanced: your own reverse proxy
 
 If you already run nginx, Caddy, Traefik or Nginx Proxy Manager and want to use your
-own certificates, you do not need Tailscale at all.
-
-**1. Let your proxy reach the app.** Which option applies depends on where the proxy
-runs:
-
-| Your proxy | What to do |
-|---|---|
-| Same host, host network mode | Nothing — `http://127.0.0.1:8477` already works |
-| Docker bridge network, or another machine | Set `APP_BIND=0.0.0.0` in `.env` |
-| Attached to this stack's network | Target `app:3000` and publish nothing at all |
-
-The app binds to `127.0.0.1` by default on purpose, so it is not reachable from your
-LAN. `APP_BIND=0.0.0.0` removes that protection and serves an unencrypted login page to
-your whole network — only set it with a TLS-terminating proxy in front.
-
-**2. Set your address:** `APP_URL=https://armory.example.com` in `.env`.
-
-**3. Turn off the Tailscale sidecar**, or it will keep starting unused:
+own certificates, you do not need Tailscale at all. Pass your public HTTPS address and
+the installer skips the entire Tailscale phase — no sidecar, no machine to approve, no
+certificate to wait for:
 
 ```bash
-sed -i 's/^COMPOSE_PROFILES=.*/COMPOSE_PROFILES=/' .env
+curl -fsSL https://armoryhub.app/install.sh | sh -s -- --reverse-proxy https://armory.example.com
 ```
 
-**4. Terminate TLS at the proxy.** Browsers only allow the encryption ArmoryHub needs
-over HTTPS or on `localhost`, so reaching it by plain `http://` at a LAN address will
-let you sign in and then fail to unlock your data.
+The `-s --` matters. It is what lets a piped script take arguments at all; without it
+the shell treats `--reverse-proxy` as a filename to run. If you would rather not
+remember that, the environment form is equivalent:
 
-Then restart: `docker compose up -d`.
+```bash
+curl -fsSL https://armoryhub.app/install.sh | ARMORYHUB_REVERSE_PROXY=https://armory.example.com sh
+```
+
+That sets `APP_URL` to your address, sets `APP_BIND=0.0.0.0` so a proxy outside this
+host can reach the app, and leaves `COMPOSE_PROFILES` empty so no sidecar starts. Run
+`install.sh --help` for every option.
+
+**Then point your proxy at `http://<this-machine>:8477`** and serve it as your HTTPS
+address. Terminate TLS at the proxy: browsers only allow the encryption ArmoryHub needs
+over HTTPS, so a plain `http://` address lets you sign in and then fails to unlock your
+data.
+
+### Which bind address you want
+
+`APP_BIND=0.0.0.0` is the default with `--reverse-proxy` because it is what the common
+setups need — but it publishes an unencrypted login page on port 8477 to your whole
+network, so it is worth knowing whether you need it:
+
+| Where your proxy runs | What to use |
+|---|---|
+| Same host, host network mode | `--bind 127.0.0.1` — loopback is enough |
+| Docker bridge network, or another machine | the default `0.0.0.0` |
+| Attached to this stack's own network | `--bind 127.0.0.1`, and target `app:3000` |
+
+```bash
+curl -fsSL https://armoryhub.app/install.sh | sh -s -- \
+  --reverse-proxy https://armory.example.com --bind 127.0.0.1
+```
+
+Until the proxy is actually in front of it, `0.0.0.0` means anyone on your LAN can
+reach that login page. Firewall the port, or use `--bind 127.0.0.1` if you can.
+
+### Converting an existing install
+
+Already installed with Tailscale and want to switch? Nothing needs reinstalling — edit
+`.env` in your install directory and restart:
+
+```bash
+cd ~/armoryhub
+sed -i 's|^APP_URL=.*|APP_URL=https://armory.example.com|' .env
+sed -i 's|^APP_BIND=.*|APP_BIND=0.0.0.0|' .env
+sed -i 's|^COMPOSE_PROFILES=.*|COMPOSE_PROFILES=|' .env
+docker compose --profile tailscale down
+docker compose up -d
+```
+
+Sign out of Tailscale first if you are done with it entirely —
+`docker compose exec tailscale tailscale logout` — or a later reinstall shows up as
+`armoryhub-1`.
+
+If your install predates `--reverse-proxy` it may have no `APP_BIND` line at all, in
+which case add one rather than replacing it:
+
+```bash
+grep -q '^APP_BIND=' .env || echo 'APP_BIND=0.0.0.0' >> .env
+```
 
 ### Or use the built-in Caddy, with your own domain
 
 If you own a domain and want a public URL without running your own proxy, the compose
 file ships a Caddy profile that gets a Let's Encrypt certificate for you. Set
-`CADDY_SITE_ADDRESS` and `CADDY_ACME_EMAIL` in `.env`, set
-`COMPOSE_PROFILES=caddy`, and point a DNS record at the machine. That needs ports 80
-and 443 reachable from the internet — unlike the Tailscale route, this does put the
-login page on the public internet.
+`CADDY_SITE_ADDRESS` and `CADDY_ACME_EMAIL` in `.env`, set `COMPOSE_PROFILES=caddy`,
+and point a DNS record at the machine. That needs ports 80 and 443 reachable from the
+internet — unlike the Tailscale route, this does put the login page on the public
+internet.
+
+### Changing the installer itself
+
+`install.sh` is a plain POSIX shell script with no dependencies, and this repo is
+public. If it does not do what your setup needs, clone it, edit it, and run your copy:
+
+```bash
+git clone https://github.com/marcjwrigg/armoryhub-selfhost-install.git
+cd armoryhub-selfhost-install
+# edit install.sh
+sh install.sh --reverse-proxy https://armory.example.com
+```
+
+Set `ARMORYHUB_CONFIG_REPO=you/your-fork` if you also want it to pull
+`docker-compose.yml` and the `armoryhub` helper from your fork rather than from here.
 
 ## The armoryhub command
 
