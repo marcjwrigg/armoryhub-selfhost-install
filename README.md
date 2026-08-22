@@ -197,14 +197,24 @@ internet into a shell means running something you never saw.
 Pass your everyday login name, not `root` — that is the account that gets the group
 memberships, and the account you should install ArmoryHub as.
 
-**Then log out and back in.** Group changes only apply to new sessions, so until you
-do, `docker` still fails and it looks like the script did not work. Check it took:
+**Then log out completely and back in.** Group changes only apply to new sessions, so
+until you do, `docker` still fails and it looks like the script did not work.
+
+Note that `exit` on its own is **not** enough. You got to root with `su -`, and the
+session underneath that root shell was started before your user joined the groups —
+so it has not got them either. Leave the root shell *and* log out of your own session
+(over SSH, close the connection), then log back in.
+
+Check it took before going any further:
 
 ```bash
 docker run hello-world
 ```
 
-Then carry on with [Install (one command)](#install-one-command) as your normal user.
+A permission error on `/var/run/docker.sock` means you are still in the old session.
+
+Once that works, carry on with [Install (one command)](#install-one-command) as your
+normal user, not as root.
 
 It is safe to re-run, it skips Docker if Docker is already installed, and it works on
 Ubuntu and the other Debian derivatives too. If you are on something else, install
