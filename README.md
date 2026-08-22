@@ -398,11 +398,23 @@ grep -q '^APP_BIND=' .env || echo 'APP_BIND=0.0.0.0' >> .env
 ### Or use the built-in Caddy, with your own domain
 
 If you own a domain and want a public URL without running your own proxy, the compose
-file ships a Caddy profile that gets a Let's Encrypt certificate for you. Set
-`CADDY_SITE_ADDRESS` and `CADDY_ACME_EMAIL` in `.env`, set `COMPOSE_PROFILES=caddy`,
-and point a DNS record at the machine. That needs ports 80 and 443 reachable from the
-internet — unlike the Tailscale route, this does put the login page on the public
-internet.
+file ships a Caddy profile that gets a Let's Encrypt certificate for you. In `.env`:
+
+```bash
+CADDY_SITE_ADDRESS=armory.example.com
+CADDY_ACME_EMAIL=you@example.com
+APP_URL=https://armory.example.com     # must match CADDY_SITE_ADDRESS
+COMPOSE_PROFILES=caddy
+```
+
+**`APP_URL` has to be the same address as `CADDY_SITE_ADDRESS`.** There is no
+`--caddy` install flag, so everyone arriving here already has an install whose
+`APP_URL` points at a `.ts.net` name. Leave it pointing there and the app keeps
+generating links to an address Caddy is not serving.
+
+Then point a DNS record at the machine and `docker compose up -d`. This needs ports 80
+and 443 reachable from the internet — unlike the Tailscale route, it does put your
+login page on the public internet.
 
 ### Changing the installer itself
 
@@ -546,6 +558,16 @@ prints the real error where the browser shows you nothing:
 
 ```bash
 docker compose exec tailscale tailscale cert <your-full-domain>
+```
+
+If that comes back with a **500** and `your Tailscale account does not support getting
+TLS certs`, nothing is broken and nothing needs reinstalling — HTTPS Certificates were
+never switched on for your tailnet. It is one toggle, free on every plan, off by
+default. Turn it on as described in
+[step 4](#4-tailscale-and-why-https-is-not-optional), then:
+
+```bash
+docker compose --profile tailscale restart tailscale
 ```
 
 **Your HTTPS address stopped working after an upgrade.** Check `docker compose ps`
