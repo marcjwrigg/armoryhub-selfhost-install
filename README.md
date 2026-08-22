@@ -3,6 +3,26 @@
 Configuration only — the application itself is a container image. No account, no
 credentials, and no build step required to install.
 
+> ### Already running ArmoryHub? Run this once
+>
+> Every install made before 0.1.7 has an `armoryhub update` that cannot actually
+> change the version. The image tag is pinned in your `docker-compose.yml` when you
+> install, and `update` pulled that same pinned tag — so it reported success, updated
+> its own helper script, and left the app exactly where it was. If `armoryhub doctor`
+> says you are on 0.1.6, this is why.
+>
+> The fix is in the new helper, which the old one cannot install for itself. Replace it
+> by hand, once:
+>
+> ```bash
+> sudo curl -fsSL https://raw.githubusercontent.com/marcjwrigg/armoryhub-selfhost-install/main/armoryhub \
+>   -o "$(command -v armoryhub)" && sudo chmod +x "$(command -v armoryhub)"
+> armoryhub update
+> ```
+>
+> From then on `armoryhub update` keeps itself current and `armoryhub doctor` reports
+> your version and whether it is the latest. New installs need none of this.
+
 **Three ways in. They are alternatives, not steps — pick the one that sounds like you.**
 
 **[Not My First Rodeo](#not-my-first-rodeo--the-one-command-install)** — the one-command install

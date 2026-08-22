@@ -64,6 +64,19 @@ IMAGE=""
 [ -n "$APP" ] && IMAGE=$(docker inspect "$APP" --format '{{.Config.Image}}' 2>/dev/null || true)
 NETWORK="${PROJECT}_default"
 
+# The version this install is running, and the version new installs get. Shared by
+# doctor and update so there is one URL and one parse rather than two that can drift.
+COMPOSE_URL="https://raw.githubusercontent.com/marcjwrigg/armoryhub-selfhost-install/main/docker-compose.yml"
+
+running_version() { printf '%s' "${IMAGE:-}" | sed -n 's/.*armoryhub-selfhost://p'; }
+
+# Short timeout: doctor has to stay usable on a box with no route to the internet,
+# where this is a nicety and everything else it checks still matters.
+latest_version() {
+  curl -fsSL -m 5 "$COMPOSE_URL" 2>/dev/null \
+    | sed -n 's/.*armoryhub-selfhost:${ARMORYHUB_VERSION:-\([^}]*\)}.*/\1/p' | head -1
+}
+
 ts_domain() {
   [ -n "$TS" ] || return 1
   docker exec "$TS" tailscale status --json 2>/dev/null \
@@ -109,7 +122,30 @@ doctor() {
   else warn "tailscale not running — fine if you use your own reverse proxy, otherwise your HTTPS address will not resolve"
   fi
 
-  # 2. Compose file integrity. A rewritten file still leaves containers running, so
+  # 2. Version, and whether it is the current release.
+  #
+  # Worth surfacing: the image tag is pinned in docker-compose.yml at install time, so
+  # an install can sit on a superseded version indefinitely while every other check
+  # here passes. Until recently `armoryhub update` could not move it at all.
+  RUNNING=$(running_version)
+  if [ -z "$RUNNING" ]; then
+    warn "could not determine the running version"
+    info "the app container may not be running"
+  else
+    LATEST=$(latest_version)
+    if [ -z "$LATEST" ]; then
+      ok "version $RUNNING"
+      info "could not reach the registry to check whether that is the current release"
+    elif [ "$RUNNING" = "$LATEST" ]; then
+      ok "version $RUNNING (current)"
+    else
+      warn "version $RUNNING — $LATEST is available"
+      info "upgrade with:  armoryhub update"
+      info "a backup is taken first, and the upgrade aborts if that backup fails"
+    fi
+  fi
+
+  # 3. Compose file integrity. A rewritten file still leaves containers running, so
   #    this is invisible until you next try to use a profile service.
   if [ -f "$DIR/docker-compose.yml" ]; then
     if grep -q '^  tailscale:' "$DIR/docker-compose.yml" 2>/dev/null; then
@@ -133,7 +169,7 @@ doctor() {
     warn "no docker-compose.yml at $DIR"
   fi
 
-  # 3. App reachable on loopback
+  # 4. App reachable on loopback
   PORT=$(appenv APP_PORT || echo "")
   [ -n "$PORT" ] || PORT=8477
   HOSTPORT=$(docker port "$APP" 3000 2>/dev/null | head -1 | sed 's/.*://' || true)
@@ -149,7 +185,7 @@ doctor() {
     info "see why:  armoryhub logs"
   fi
 
-  # 4. HTTPS. This is the one that presents as a blank page with an empty console.
+  # 5. HTTPS. This is the one that presents as a blank page with an empty console.
   #
   # Deliberately does NOT trust a single probe. The obvious check — wget from inside
   # the tailscale container to its own public name — fails in setups where HTTPS is
@@ -229,7 +265,7 @@ doctor() {
     fi
   fi
 
-  # 5. Storage. Postgres on FUSE or a network share corrupts slowly and blames itself.
+  # 6. Storage. Postgres on FUSE or a network share corrupts slowly and blames itself.
   if [ -d "$DIR/data/postgres" ]; then
     FS=$(stat -f -c %T "$DIR/data/postgres" 2>/dev/null || echo unknown)
     case "$FS" in
@@ -242,13 +278,13 @@ doctor() {
     esac
   fi
 
-  # 6. Free space
+  # 7. Free space
   AVAIL=$(df -Pk "$DIR" 2>/dev/null | awk 'NR==2{print int($4/1024)}' || echo 0)
   if [ "$AVAIL" -lt 1024 ]; then bad "only ${AVAIL}MB free at $DIR"
   elif [ "$AVAIL" -lt 5120 ]; then warn "${AVAIL}MB free at $DIR"
   else ok "$((AVAIL/1024))GB free"; fi
 
-  # 7. Backups: existence is not the point, recency is.
+  # 8. Backups: existence is not the point, recency is.
   if [ -d "$DIR/data/backups" ]; then
     NEWEST=$(ls -1t "$DIR/data/backups" 2>/dev/null | head -1 || true)
     COUNT=$(ls -1 "$DIR/data/backups" 2>/dev/null | wc -l | tr -d ' ')
@@ -262,7 +298,7 @@ doctor() {
     fi
   fi
 
-  # 8. Compose version, for whoever still uses compose directly
+  # 9. Compose version, for whoever still uses compose directly
   CV=$(docker compose version --short 2>/dev/null | tr -d 'v' || echo "")
   if [ -n "$CV" ]; then
     MAJ=${CV%%.*}; REST=${CV#*.}; MIN=${REST%%.*}
@@ -367,14 +403,12 @@ case "$CMD" in
     # ${ARMORYHUB_VERSION:-<pinned>}, .env belongs to the operator rather than being
     # generated, and writing there leaves any local compose edits — or a dashboard's
     # rewrite of that file — completely alone.
-    COMPOSE_URL="https://raw.githubusercontent.com/marcjwrigg/armoryhub-selfhost-install/main/docker-compose.yml"
-    CURRENT=$(printf '%s' "${IMAGE:-}" | sed -n 's/.*armoryhub-selfhost://p')
+    CURRENT=$(running_version)
     TARGET="${1:-}"
 
     if [ -z "$TARGET" ]; then
       # What new installs currently get. Authoritative, and one request.
-      TARGET=$(curl -fsSL "$COMPOSE_URL" 2>/dev/null \
-        | sed -n 's/.*armoryhub-selfhost:${ARMORYHUB_VERSION:-\([^}]*\)}.*/\1/p' | head -1)
+      TARGET=$(latest_version)
       if [ -z "$TARGET" ]; then
         echo "  could not reach the registry to check for a newer version"
         echo "  pulling whatever the current pin resolves to instead"
