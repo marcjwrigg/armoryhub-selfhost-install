@@ -113,6 +113,13 @@ embedded in `docker-compose.yml` and fail with a confusing error about `configs`
 If Docker is not installed yet, follow
 <https://docs.docker.com/engine/install/>.
 
+**And `curl`.** Debian does not install it by default, and both the install command
+below and the installer itself need it:
+
+```bash
+sudo apt-get update && sudo apt-get install -y curl
+```
+
 **A free Tailscale account**, at <https://tailscale.com>.
 
 If you have not used Tailscale before: it is a private network that links your own
@@ -170,11 +177,18 @@ lines, and every step is commented. Read it there, or download it and read it
 locally — do not take our word for what it does.
 
 ```bash
+su -                                         # a fresh Debian has no sudo yet
+apt-get update && apt-get install -y curl    # Debian does not ship curl
 curl -fsSL https://raw.githubusercontent.com/marcjwrigg/armoryhub-selfhost-install/main/bootstrap-debian.sh -o bootstrap-debian.sh
-less bootstrap-debian.sh          # read it — you are about to run it as root
-su -                              # enter the root password
+less bootstrap-debian.sh                     # or cat — read it before running it
 bash bootstrap-debian.sh <your-username>
 ```
+
+The `apt-get install curl` line is not a mistake: **Debian does not include `curl`
+in a default install**, so the download command fails with `curl: command not found`
+on exactly the fresh machine this section is about. If you already have `curl`, or
+prefer `wget` (which Debian usually does ship), skip that line and use whichever you
+have. The script installs `curl` properly later on for the rest of the setup.
 
 Downloaded and read, then run as a separate deliberate step — deliberately not a
 `curl ... | sh` one-liner. Piping a root-privileged script straight from the

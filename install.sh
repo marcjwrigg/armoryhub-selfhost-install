@@ -56,6 +56,15 @@ docker info >/dev/null 2>&1 || die 'Docker is installed but not usable by this u
     Or re-run this installer with sudo.'
 docker compose version >/dev/null 2>&1 || die 'The Docker Compose plugin is missing.
     See https://docs.docker.com/compose/install/'
+# Checked explicitly even though the advertised one-liner is itself curl-based: anyone
+# who fetched this file with wget, scp or a browser gets here without curl, and the
+# first thing to fail would be the compose download, reported as a network problem
+# rather than as the missing tool it actually is. Debian ships without curl.
+command -v curl >/dev/null 2>&1 || die 'curl is not installed, and this installer needs it.
+
+    Debian does not include curl by default. Install it with:
+
+      sudo apt-get update && sudo apt-get install -y curl'
 ok "docker $(docker version --format '{{.Server.Version}}' 2>/dev/null || echo present)"
 
 # Generates the passwords. Uses openssl where available, and the system random
