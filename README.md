@@ -10,6 +10,42 @@ configurations on every change — [see for yourself](../../actions/workflows/ci
 You are about to run a shell script on your own machine; that should be checkable
 rather than a claim.
 
+## Contents
+
+- [Beta, and what it costs](#beta-and-what-it-costs)
+- ["Not My First Rodeo" — the one-command install](#not-my-first-rodeo--the-one-command-install)
+- ["Hold My Hand" — the full guide](#hold-my-hand--the-full-guide)
+- ["Hold My Beer" — reverse proxies, custom builds and doing it your way](#hold-my-beer--reverse-proxies-custom-builds-and-doing-it-your-way)
+- [The armoryhub command](#the-armoryhub-command)
+- [Updating](#updating)
+- [Backups](#backups)
+- [Troubleshooting](#troubleshooting)
+- [Your password, PIN and passphrase](#your-password-pin-and-passphrase)
+- [Installing it as an app on your phone and computer](#installing-it-as-an-app-on-your-phone-and-computer)
+- [Running under CasaOS, Portainer or Dockge](#running-under-casaos-portainer-or-dockge)
+- [Moving an existing hosted account across](#moving-an-existing-hosted-account-across)
+- [Uninstalling](#uninstalling)
+
+## Beta, and what it costs
+
+**Self-hosted ArmoryHub is a beta product.** Same application and the same encryption as
+the hosted version, and it is in real use — but it is younger, it runs on hardware we
+have never seen, and you should expect rough edges. Read this before you commit your
+records to it, and keep a backup you have actually tested.
+
+**It is free during the beta.** There is no licence key, no activation, and nothing in
+the instance that phones home to check one.
+
+**Self-hosting will eventually be licensed, and you will be grandfathered.** Any instance
+running a version below `1.0` stays free, permanently, and keeps updating. You will not
+wake up to a locked instance or a demand for a key. That is the point of installing
+during a beta.
+
+If you would rather not use it for nothing, there is a
+[pay-what-you-want link](https://armoryhub.app/self-hosted#beta) — you pick the amount.
+Nothing about your install depends on it: no tier, no receipt to enter, no feature behind
+it. Skipping it is the expected answer.
+
 > ### Already running ArmoryHub? Run this once
 >
 > Every install made before 0.1.7 has an `armoryhub update` that cannot actually
@@ -62,21 +98,6 @@ existing install.
 
 Everything after those three is reference: day-to-day commands, backups, updating,
 putting it on your phone, and moving an account across from hosted.
-
-## Contents
-
-- ["Not My First Rodeo" — the one-command install](#not-my-first-rodeo--the-one-command-install)
-- ["Hold My Hand" — the full guide](#hold-my-hand--the-full-guide)
-- ["Hold My Beer" — reverse proxies, custom builds and doing it your way](#hold-my-beer--reverse-proxies-custom-builds-and-doing-it-your-way)
-- [The armoryhub command](#the-armoryhub-command)
-- [Updating](#updating)
-- [Backups](#backups)
-- [Troubleshooting](#troubleshooting)
-- [Your password, PIN and passphrase](#your-password-pin-and-passphrase)
-- [Installing it as an app on your phone and computer](#installing-it-as-an-app-on-your-phone-and-computer)
-- [Running under CasaOS, Portainer or Dockge](#running-under-casaos-portainer-or-dockge)
-- [Moving an existing hosted account across](#moving-an-existing-hosted-account-across)
-- [Uninstalling](#uninstalling)
 
 ## "Not My First Rodeo" — the one-command install
 
