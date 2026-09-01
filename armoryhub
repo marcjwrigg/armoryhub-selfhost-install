@@ -215,42 +215,69 @@ set_env() {
 
 pin_version() { set_env ARMORYHUB_VERSION "$1"; }
 
-# Update this script too. `docker compose pull` refreshes the image; this file lives on
-# the host and nothing else would ever replace it, so without this the helper silently
-# ages out while the app moves on.
+# Update this script too. The image is refreshed by `docker compose pull`; this file
+# lives on the host and nothing else would ever replace it.
 #
-# Runs even when the image is already current, because the two version independently:
-# a fix to this file ships without an image release.
+# ## Why this reads the helper out of the IMAGE
+#
+# Because the helper ships inside it. That gives three things GitHub cannot: the
+# version installed always matches the version running, it works on a box with no
+# route to the internet, and there is no second artifact to keep in step.
+#
+# ## Why it installs through a container
+#
+# /usr/local/bin is root-owned and whoever runs `update` usually is not root. The
+# earlier versions of this function tried to write the file directly, then fell back
+# to `sudo -n`, and when neither worked they gave up — at first silently, later with a
+# message telling the operator to run a curl by hand.
+#
+# That was wrong, and wrong in a self-perpetuating way: every fix to the self-update
+# mechanism had to be delivered BY the mechanism it was fixing, so an install that
+# fell behind could never catch up on its own. A management tool that asks to be
+# updated by hand is a broken tool.
+#
+# Docker is the answer that was there all along. Anyone running this command has just
+# used Docker to pull and recreate containers, and a container running as root can
+# write anywhere on the host. No sudo, no password prompt, no interactive terminal
+# required, and nothing to do by hand.
 HELPER_URL="https://raw.githubusercontent.com/marcjwrigg/armoryhub-selfhost-install/main/armoryhub"
 
-update_helper() {
-  # Downloaded to a temp file in /tmp, NOT to "$0.new".
-  #
-  # $0 is normally /usr/local/bin/armoryhub, and /usr/local/bin is root-owned. So for
-  # anyone running this as their own user — which is the documented way to use it —
-  # curl could not create "$0.new" at all. That failure took the whole condition to
-  # the else branch, which deleted the file and said NOTHING, so the helper was never
-  # replaced and `update` reported success every single time. Found on a box happily
-  # running 0.1.8 whose helper was still the 0.1.7 one, with no `portal` command and
-  # no indication anything was wrong.
-  #
-  # Fetching somewhere writable separates two failures that are not alike: the
-  # download either works or is a network problem, and only INSTALLING it needs
-  # privileges — which is the part that has a sudo fallback and a message worth
-  # printing. Every branch below now says something.
-  NEW=$(mktemp 2>/dev/null) || NEW="/tmp/armoryhub-helper.$$"
+# Copy the helper out of the image and onto the host, as root, in one step.
+install_helper_from_image() {
+  _img="$1"
+  _dir=$(dirname "$0")
+  _base=$(basename "$0")
+  # Staged inside the destination directory and renamed, so the running script's inode
+  # is left alone — writing $0 directly would truncate the file this shell is reading.
+  docker run --rm --user 0 \
+    -v "$_dir:/target" \
+    --entrypoint /bin/sh \
+    "$_img" -c "cp /app/armoryhub /target/$_base.tmp \
+                && chmod 755 /target/$_base.tmp \
+                && mv /target/$_base.tmp /target/$_base" >/dev/null 2>&1
+}
 
-  if ! curl -fsSL -m 15 "$HELPER_URL" -o "$NEW" 2>/dev/null; then
-    rm -f "$NEW"
-    echo "  could not check for a newer armoryhub command (no route to github?)"
-    return 0
+update_helper() {
+  [ -n "${IMAGE:-}" ] || return 0
+
+  # What the image carries, for comparison. --entrypoint cat because the image's own
+  # entrypoint boots the app.
+  NEW=$(mktemp 2>/dev/null) || NEW="/tmp/armoryhub-helper.$$"
+  if ! docker run --rm --entrypoint /bin/cat "$IMAGE" /app/armoryhub > "$NEW" 2>/dev/null \
+     || [ ! -s "$NEW" ]; then
+    # Older images do not carry it. Fall back to the published copy so an install can
+    # still move forward from a version that predates this.
+    if ! curl -fsSL -m 15 "$HELPER_URL" -o "$NEW" 2>/dev/null || [ ! -s "$NEW" ]; then
+      rm -f "$NEW"
+      return 0
+    fi
   fi
 
-  # A truncated or HTML error page must never be installed over the one working tool
-  # the operator has.
+  # A truncated download or a stray HTML error page must never replace the one working
+  # tool the operator has.
   if ! sh -n "$NEW" 2>/dev/null; then
     rm -f "$NEW"
-    echo "  the downloaded armoryhub command is not valid shell — keeping this one"
+    echo "  the newer armoryhub command is not valid shell — keeping this one"
     return 0
   fi
 
@@ -259,67 +286,31 @@ update_helper() {
     return 0
   fi
 
-  # Staged in the DESTINATION directory, then renamed over the target.
-  #
-  # Both halves matter. Rename swaps the directory entry and leaves the running
-  # script's inode alone, whereas writing to $0 directly truncates the file this
-  # shell is still reading from. And the staging file has to be on the destination's
-  # own filesystem, because `mv` across filesystems is a copy that opens the target
-  # with O_TRUNC — which is the very thing rename is being used to avoid.
-  STAGE="$0.new"
+  # Direct write first: it needs no container, and covers the operator who owns the
+  # file — a helper left in the install directory, or `update` run as root.
+  STAGE="$0.tmp"
   if cp "$NEW" "$STAGE" 2>/dev/null && mv "$STAGE" "$0" 2>/dev/null && chmod +x "$0" 2>/dev/null; then
     rm -f "$NEW"
     echo "  armoryhub command updated"
     return 0
   fi
-  rm -f "$STAGE"
+  rm -f "$STAGE" 2>/dev/null || true
 
-  # Passwordless sudo first, because it needs no interaction.
-  if sudo -n true 2>/dev/null \
-     && sudo cp "$NEW" "$STAGE" 2>/dev/null \
-     && sudo mv "$STAGE" "$0" 2>/dev/null \
-     && sudo chmod +x "$0" 2>/dev/null; then
+  # Then through Docker, as root. This is the path that actually runs on a normal
+  # install, and it is why nothing here needs sudo or a terminal.
+  if install_helper_from_image "$IMAGE"; then
     rm -f "$NEW"
     echo "  armoryhub command updated"
     return 0
   fi
-  sudo -n rm -f "$STAGE" 2>/dev/null || rm -f "$STAGE" 2>/dev/null || true
 
-  # Then ASK. Requiring PASSWORDLESS sudo was too strong an assumption: on an ordinary
-  # box sudo wants a password, `sudo -n` fails, and the helper then never replaced
-  # itself no matter how many times `update` was run — which is how an install ended up
-  # on a 0.1.9 image with a 0.1.8 helper, missing the very command that fixes it.
-  #
-  # Someone is at a terminal, because they just typed this. Reading from /dev/tty
-  # rather than stdin so the prompt works even when the command was piped.
-  if { exec 3</dev/tty; } 2>/dev/null; then
-    echo
-    echo "  A newer armoryhub command is available. Installing it needs sudo."
-    # shellcheck disable=SC2024  # that is an INPUT redirect, so sudo can prompt on the
-    # terminal; SC2024 is about output redirects losing root.
-    if sudo cp "$NEW" "$STAGE" </dev/tty \
-       && sudo mv "$STAGE" "$0" \
-       && sudo chmod +x "$0"; then
-      rm -f "$NEW"
-      echo "  armoryhub command updated"
-      return 0
-    fi
-    sudo -n rm -f "$STAGE" 2>/dev/null || true
-  fi
+  # Only if Docker could not place it either — a helper outside any directory Docker
+  # can bind-mount, or an image too old to carry it.
   rm -f "$NEW"
-
-  # Named loudly, because this is the state that used to be silent. An operator who
-  # does not run this command keeps an old helper for ever, and the symptom is a
-  # documented command that does not exist.
   echo
-  echo "  A NEWER armoryhub command is available but $0"
-  echo "  could not be written (it is owned by root, and this is not running as root)."
-  echo
+  echo "  A newer armoryhub command is available but $0 could not be replaced."
   echo "  Install it with:"
   echo "    sudo curl -fsSL $HELPER_URL -o $0 && sudo chmod +x $0"
-  echo
-  echo "  Everything else updated fine. Until you run that, this command stays on its"
-  echo "  current version and new subcommands will not exist."
   echo
 }
 
@@ -327,6 +318,30 @@ ts_domain() {
   [ -n "$TS" ] || return 1
   docker exec "$TS" tailscale status --json 2>/dev/null \
     | grep -m1 '"DNSName"' | cut -d'"' -f4 | sed 's/\.$//'
+}
+
+# The address to actually open in a browser.
+#
+# Tailscale first, APP_URL second. APP_URL is what the app uses to build links, and it
+# is NOT reliably the address you reach the instance on: install.sh writes
+# http://localhost:8477 as a placeholder and only the operator ever updates it, so an
+# install can serve happily on https://<name>.ts.net while APP_URL still says
+# localhost. Printing that told people to open an address that works from nowhere
+# except the server itself.
+#
+# Shared by `url`, `portal status` and `portal on` so all three agree.
+instance_url() {
+  _n=$(ts_domain || true)
+  if [ -n "$_n" ]; then
+    printf 'https://%s' "$_n"
+    return 0
+  fi
+  _u=$(appenv APP_URL || true)
+  if [ -n "$_u" ]; then
+    printf '%s' "$_u"
+    return 0
+  fi
+  printf 'http://localhost:8477'
 }
 
 # --- backup / restore --------------------------------------------------------
@@ -721,7 +736,7 @@ portal_cmd() {
           bad "the Docker socket is NOT reachable inside the app container"
           info "re-run:  armoryhub portal on"
         fi
-        printf '\n  Open %s and go to Settings -> Server\n' "$(appenv APP_URL || echo 'your instance')"
+        printf '\n  Open %s and go to Settings -> Server\n' "$(instance_url)"
       else
         printf '\n  The portal is OFF.\n'
         printf '\n  Turn it on with:  armoryhub portal on\n'
@@ -778,7 +793,7 @@ portal_cmd() {
       fi
 
       apply_mounts
-      printf '\n  Open %s and go to Settings -> Server\n' "$(appenv APP_URL || echo 'your instance')"
+      printf '\n  Open %s and go to Settings -> Server\n' "$(instance_url)"
       printf '  Turn it off again at any time with:  armoryhub portal off\n\n' ;;
 
     off)
@@ -897,6 +912,17 @@ doctor() {
       info "approve the machine using the link in:  armoryhub logs tailscale"
     else
       ok "tailscale address: https://$NAME"
+
+      # APP_URL is what the app builds links from, and nothing updates it for you
+      # after Tailscale registers. An install can serve perfectly on the address
+      # above while every link it generates points at localhost.
+      CONFIGURED_URL=$(appenv APP_URL || true)
+      if [ -n "$CONFIGURED_URL" ] && [ "$CONFIGURED_URL" != "https://$NAME" ]; then
+        warn "APP_URL is $CONFIGURED_URL, not https://$NAME"
+        info "links the app generates will point at that address instead"
+        info "fix it in the browser (Settings -> Server -> Config), or:"
+        info "  cd $DIR && sed -i \"s|^APP_URL=.*|APP_URL=https://$NAME|\" .env && docker compose up -d"
+      fi
 
       PROBE_ERR=$(docker exec "$TS" wget -q -T 12 -O /dev/null \
         "https://$NAME/api/selfhost/auth/status" 2>&1) && PROBE=ok || PROBE=fail
@@ -1159,11 +1185,7 @@ case "$CMD" in
     docker logs -f --tail 100 "$C" ;;
 
   url)
-    NAME=$(ts_domain || true)
-    if [ -n "$NAME" ]; then echo "https://$NAME"
-    else
-      appenv APP_URL || echo "http://localhost:8477"
-    fi ;;
+    instance_url; echo ;;
 
   backup)
     SUB="${1:-list}"; [ $# -gt 0 ] && shift

@@ -532,15 +532,16 @@ corrupt it, free space, and backup age — and tells you what to do about each.
 
 ### If `armoryhub update` runs but nothing seems to change
 
-Two things do not update themselves in versions up to and including 0.1.9. Both are
-fixed from 0.1.10 onward, but a fix cannot apply retroactively — the broken code is in
-the copy you already have — so if you installed before then, do each of these once.
+Two things did not update themselves in versions up to and including 0.1.11. Both are
+fixed from 0.1.12 onward and need nothing from you from then on — but a fix cannot
+apply retroactively, because the code that would have delivered it is the code that
+was broken. So if you installed before 0.1.12, do each of these once.
 
 **1. The `armoryhub` command itself.** It fetched its own replacement into
-`/usr/local/bin`, which is owned by root, so running `armoryhub update` as your own
-user could not write the file — and the failure was silent. The symptom is a command
-that stays on an old version for ever: new subcommands like `portal` simply do not
-exist, and `update` keeps behaving the way the old version did.
+`/usr/local/bin`, which is root-owned, so running `armoryhub update` as your own user
+could not write the file. The symptom is a command that stays on an old version for
+ever: new subcommands simply do not exist, and `update` keeps behaving the way the
+old version did.
 
 ```bash
 # Note the raw.githubusercontent URL: only install.sh has a website rewrite.
@@ -548,9 +549,10 @@ sudo curl -fsSL https://raw.githubusercontent.com/marcjwrigg/armoryhub-selfhost-
   -o /usr/local/bin/armoryhub && sudo chmod +x /usr/local/bin/armoryhub
 ```
 
-From 0.1.10 the download goes somewhere writable first and, if it needs `sudo`, it
-asks you for it rather than requiring passwordless `sudo` and giving up quietly when
-there is none.
+From 0.1.12 the helper ships inside the image and `update` installs it through a
+container running as root — so it needs no `sudo`, no password prompt, no terminal
+and no network beyond the image pull you were already doing. You will not have to
+touch it again.
 
 **2. `docker-compose.yml`.** It is written once, when you install, and `update`
 only ever moved the image version in `.env`. That was harmless while releases only
@@ -807,6 +809,19 @@ backup service directly rather than reading the directory itself.
 not reference `BACKUP_PATH`, so nothing consumed it. `armoryhub compose refresh`,
 then set it again and confirm with `armoryhub backup list`.
 
+**Links in the app point at localhost.** `APP_URL` is what the app builds links from,
+and nothing updates it for you once Tailscale registers — `install.sh` writes
+`http://localhost:8477` as a placeholder. Your instance serves fine on its real
+address either way, but set it to match: Settings → Server → Config in the browser, or
+
+```bash
+cd ~/armoryhub
+sed -i "s|^APP_URL=.*|APP_URL=|" .env
+docker compose up -d
+```
+
+`armoryhub doctor` reports it when the two disagree.
+
 **The page is blank, or the certificate looks wrong.** Ask Tailscale directly — it
 prints the real error where the browser shows you nothing:
 
@@ -1042,4 +1057,4 @@ the machine first.
 
 ---
 
-Version: `0.1.10`
+Version: `0.1.12`
