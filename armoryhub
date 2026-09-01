@@ -285,12 +285,24 @@ install_helper_from_image() {
 }
 
 update_helper() {
-  [ -n "${IMAGE:-}" ] || return 0
+  # Re-resolved HERE, not taken from $IMAGE.
+  #
+  # $IMAGE is captured once when the script starts, which is BEFORE the pull and the
+  # recreate. Using it meant every update copied the helper out of the version being
+  # replaced, so the helper sat permanently one release behind — an install would
+  # update to 0.1.15 and end up with 0.1.13's helper, missing whatever the release was
+  # for. That is why an install could go through several updates in a row and never
+  # gain the commands the release notes said it had.
+  _cur_app=$(container app || true)
+  _img=""
+  [ -n "$_cur_app" ] && _img=$(docker inspect "$_cur_app" --format '{{.Config.Image}}' 2>/dev/null || true)
+  [ -n "$_img" ] || _img="${IMAGE:-}"
+  [ -n "$_img" ] || return 0
 
   # What the image carries, for comparison. --entrypoint cat because the image's own
   # entrypoint boots the app.
   NEW=$(mktemp 2>/dev/null) || NEW="/tmp/armoryhub-helper.$$"
-  if ! docker run --rm --entrypoint /bin/cat "$IMAGE" /app/armoryhub > "$NEW" 2>/dev/null \
+  if ! docker run --rm --entrypoint /bin/cat "$_img" /app/armoryhub > "$NEW" 2>/dev/null \
      || [ ! -s "$NEW" ]; then
     # Older images do not carry it. Fall back to the published copy so an install can
     # still move forward from a version that predates this.
@@ -325,7 +337,7 @@ update_helper() {
 
   # Then through Docker, as root. This is the path that actually runs on a normal
   # install, and it is why nothing here needs sudo or a terminal.
-  if install_helper_from_image "$IMAGE"; then
+  if install_helper_from_image "$_img"; then
     rm -f "$NEW"
     echo "  armoryhub command updated"
     return 0
