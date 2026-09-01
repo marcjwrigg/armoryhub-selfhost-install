@@ -118,6 +118,33 @@ COMPOSE_URL="https://raw.githubusercontent.com/marcjwrigg/armoryhub-selfhost-ins
 
 running_version() { printf '%s' "${IMAGE:-}" | sed -n 's/.*armoryhub-selfhost://p'; }
 
+# Is version $1 strictly newer than $2?
+#
+# Needed because "different" is not "older". The published pin can legitimately be
+# BEHIND what an install is running: raw.githubusercontent.com caches for a few
+# minutes after a release, and a release can be rolled back. Treating any difference
+# as "newer available" made doctor advertise an upgrade to an older version, and
+# `update` would then have moved the pin backwards and done it — a downgrade, which
+# is unsafe once a release has migrated the database and is documented as such.
+#
+# Numeric dot-separated compare, missing components read as 0. Anything non-numeric
+# (a pre-release suffix) returns false rather than guessing, so the caller falls back
+# to treating the versions as merely different.
+version_gt() {
+  _a="$1"; _b="$2"
+  while [ -n "$_a" ] || [ -n "$_b" ]; do
+    _ax=${_a%%.*}; _bx=${_b%%.*}
+    [ -n "$_ax" ] || _ax=0
+    [ -n "$_bx" ] || _bx=0
+    case "$_ax$_bx" in *[!0-9]*) return 1 ;; esac
+    [ "$_ax" -gt "$_bx" ] && return 0
+    [ "$_ax" -lt "$_bx" ] && return 1
+    case "$_a" in *.*) _a=${_a#*.} ;; *) _a="" ;; esac
+    case "$_b" in *.*) _b=${_b#*.} ;; *) _b="" ;; esac
+  done
+  return 1
+}
+
 # Short timeout: doctor has to stay usable on a box with no route to the internet,
 # where this is a nicety and everything else it checks still matters.
 latest_version() {
@@ -848,6 +875,11 @@ doctor() {
       info "could not reach the registry to check whether that is the current release"
     elif [ "$RUNNING" = "$LATEST" ]; then
       ok "version $RUNNING (current)"
+    elif version_gt "$RUNNING" "$LATEST"; then
+      # Ahead of the published release. Normal for a few minutes after a release,
+      # because the raw file is served from a cache — and not something to "fix".
+      ok "version $RUNNING (newer than the published release, $LATEST)"
+      info "nothing to do; the published pin catches up shortly after a release"
     else
       warn "version $RUNNING — $LATEST is available"
       info "upgrade with:  armoryhub update"
@@ -1347,6 +1379,9 @@ case "$CMD" in
 
     CURRENT=$(running_version)
 
+    EXPLICIT_TARGET=""
+    [ -n "$TARGET" ] && EXPLICIT_TARGET=yes
+
     if [ -z "$TARGET" ]; then
       # What new installs currently get. Authoritative, and one request.
       TARGET=$(latest_version)
@@ -1354,6 +1389,33 @@ case "$CMD" in
         echo "  could not reach the registry to check for a newer version"
         echo "  pulling whatever the current pin resolves to instead"
       fi
+    fi
+
+    # Refuse to move BACKWARDS unless asked to by name.
+    #
+    # The published pin is not guaranteed to be ahead of what is installed: the raw
+    # file is cached for a few minutes after a release, and a release can be rolled
+    # back. Without this, running `update` in that window silently downgrades — and a
+    # downgrade after a release has migrated the database can leave an older image
+    # unable to start against a newer schema.
+    #
+    # An explicit version still works, because that is a deliberate rollback.
+    if [ -z "$EXPLICIT_TARGET" ] && [ -n "$TARGET" ] && [ -n "$CURRENT" ] \
+       && version_gt "$CURRENT" "$TARGET"; then
+      printf '\n'
+      ok "already on $CURRENT, which is NEWER than the published release ($TARGET)"
+      info "nothing pulled, nothing restarted"
+      info "this is normal for a few minutes after a release"
+      info "to go back to $TARGET deliberately:  armoryhub update $TARGET"
+      compose_refresh quiet || true
+      if [ -n "$COMPOSE_REFRESHED" ]; then
+        echo
+        echo "  Applying the updated compose file..."
+        docker compose up -d
+      fi
+      update_helper
+      printf '\n'
+      exit 0
     fi
 
     # Already current: say so and stop. This is the common case and it should cost
