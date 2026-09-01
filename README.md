@@ -532,9 +532,9 @@ corrupt it, free space, and backup age — and tells you what to do about each.
 
 ### If `armoryhub update` runs but nothing seems to change
 
-Two things do not update themselves in versions up to and including 0.1.8. Both are
-fixed from 0.1.9 onward, but the fix cannot apply retroactively — the broken code is
-in the copy you already have — so if you installed before then, do each of these once.
+Two things do not update themselves in versions up to and including 0.1.9. Both are
+fixed from 0.1.10 onward, but a fix cannot apply retroactively — the broken code is in
+the copy you already have — so if you installed before then, do each of these once.
 
 **1. The `armoryhub` command itself.** It fetched its own replacement into
 `/usr/local/bin`, which is owned by root, so running `armoryhub update` as your own
@@ -548,8 +548,9 @@ sudo curl -fsSL https://raw.githubusercontent.com/marcjwrigg/armoryhub-selfhost-
   -o /usr/local/bin/armoryhub && sudo chmod +x /usr/local/bin/armoryhub
 ```
 
-From 0.1.9 the download goes somewhere writable first, so it either installs itself
-via `sudo` or tells you plainly that it could not.
+From 0.1.10 the download goes somewhere writable first and, if it needs `sudo`, it
+asks you for it rather than requiring passwordless `sudo` and giving up quietly when
+there is none.
 
 **2. `docker-compose.yml`.** It is written once, when you install, and `update`
 only ever moved the image version in `.env`. That was harmless while releases only
@@ -1041,4 +1042,4 @@ the machine first.
 
 ---
 
-Version: `0.1.9`
+Version: `0.1.10`

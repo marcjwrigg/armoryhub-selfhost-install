@@ -164,20 +164,53 @@ missing_services() {
 # Writes only when the value would change, so a no-op command leaves the file's
 # mtime alone. Values are used as a sed replacement, so | is rejected rather than
 # silently corrupting the file.
+# Written IN PLACE, never replaced with mv. Two separate bugs came from mv, and
+# neither was visible until something depended on it:
+#
+#   1. mv brings the temp file's ownership and mode with it. `portal on` set .env to
+#      group 1001 mode 660 so the app could read it, then called this to set
+#      COMPOSE_FILE — which put it straight back to 600 owner-only, two lines later.
+#      The portal then reported EACCES on its own configuration and `portal on`
+#      appeared to do nothing at all.
+#
+#   2. mv gives the file a NEW inode, and .env is bind-mounted into the app container
+#      as a single FILE. A file bind mount follows the inode, so the container went on
+#      reading the OLD contents until it was recreated — meaning a value written here
+#      was simply not seen by the running app.
+#
+# `cat >` truncates and rewrites the existing inode, so ownership, mode and the bind
+# mount all survive. A copy is taken first because truncate-then-write is not atomic,
+# and this file holds every password for the install.
 set_env() {
   _k="$1"; _v="$2"
   case "$_v" in
     *"|"*) die "'|' cannot appear in a value written to .env ($_k)" ;;
   esac
+  # A newline would turn one assignment into two, which is how a caller allowed to set
+  # one key could set any other.
+  case "$_v" in
+    *"
+"*) die "a newline cannot appear in a value written to .env ($_k)" ;;
+  esac
+
   _cur=$(sed -n "s/^$_k=//p" "$DIR/.env" 2>/dev/null | head -1)
   [ "$_cur" = "$_v" ] && return 0
+
   umask 077
+  cp "$DIR/.env" "$DIR/.env.bak" 2>/dev/null || true
+
   if grep -q "^$_k=" "$DIR/.env" 2>/dev/null; then
-    sed "s|^$_k=.*|$_k=$_v|" "$DIR/.env" > "$DIR/.env.new" && mv "$DIR/.env.new" "$DIR/.env"
+    if sed "s|^$_k=.*|$_k=$_v|" "$DIR/.env" > "$DIR/.env.tmp"; then
+      cat "$DIR/.env.tmp" > "$DIR/.env"
+      rm -f "$DIR/.env.tmp"
+    else
+      rm -f "$DIR/.env.tmp"
+      die "could not update $_k in $DIR/.env — a copy is at .env.bak"
+    fi
   else
+    # Appending already preserves both the inode and the mode.
     printf '%s=%s\n' "$_k" "$_v" >> "$DIR/.env"
   fi
-  chmod 600 "$DIR/.env"
 }
 
 pin_version() { set_env ARMORYHUB_VERSION "$1"; }
@@ -241,6 +274,7 @@ update_helper() {
   fi
   rm -f "$STAGE"
 
+  # Passwordless sudo first, because it needs no interaction.
   if sudo -n true 2>/dev/null \
      && sudo cp "$NEW" "$STAGE" 2>/dev/null \
      && sudo mv "$STAGE" "$0" 2>/dev/null \
@@ -250,6 +284,28 @@ update_helper() {
     return 0
   fi
   sudo -n rm -f "$STAGE" 2>/dev/null || rm -f "$STAGE" 2>/dev/null || true
+
+  # Then ASK. Requiring PASSWORDLESS sudo was too strong an assumption: on an ordinary
+  # box sudo wants a password, `sudo -n` fails, and the helper then never replaced
+  # itself no matter how many times `update` was run — which is how an install ended up
+  # on a 0.1.9 image with a 0.1.8 helper, missing the very command that fixes it.
+  #
+  # Someone is at a terminal, because they just typed this. Reading from /dev/tty
+  # rather than stdin so the prompt works even when the command was piped.
+  if { exec 3</dev/tty; } 2>/dev/null; then
+    echo
+    echo "  A newer armoryhub command is available. Installing it needs sudo."
+    # shellcheck disable=SC2024  # that is an INPUT redirect, so sudo can prompt on the
+    # terminal; SC2024 is about output redirects losing root.
+    if sudo cp "$NEW" "$STAGE" </dev/tty \
+       && sudo mv "$STAGE" "$0" \
+       && sudo chmod +x "$0"; then
+      rm -f "$NEW"
+      echo "  armoryhub command updated"
+      return 0
+    fi
+    sudo -n rm -f "$STAGE" 2>/dev/null || true
+  fi
   rm -f "$NEW"
 
   # Named loudly, because this is the state that used to be silent. An operator who
@@ -474,9 +530,16 @@ compose_differs() {
 install_published_compose() {
   _pub="$1"
 
-  # Validated with an explicit -f so COMPOSE_FILE in .env cannot pull the portal
-  # override into a check of the base file on its own.
-  if ! ( cd "$DIR" && docker compose -f "$_pub" config -q ) >/dev/null 2>&1; then
+  # --project-directory and --env-file are both explicit on purpose. With only -f,
+  # Compose derives the project directory from the file's own location — /tmp — so it
+  # looks for .env there and resolves relative volume paths like ./data/postgres
+  # against it, validating something that is not this install. The -f keeps
+  # COMPOSE_FILE in .env from pulling the portal override into a check of the base
+  # file on its own.
+  if ! docker compose \
+        --project-directory "$DIR" \
+        --env-file "$DIR/.env" \
+        -f "$_pub" config -q >/dev/null 2>&1; then
     bad "the published compose file does not validate against your .env"
     info "nothing was changed. Your compose file is untouched."
     info "see why:  cd $DIR && docker compose -f $_pub config"
@@ -697,10 +760,6 @@ portal_cmd() {
       write_portal_override
       ok "wrote $DIR/$PORTAL_OVERRIDE"
 
-      if set_env_ownership 660 "$CONTAINER_GID"; then
-        ok ".env readable and writable by the app (mode 660, group $CONTAINER_GID)"
-      fi
-
       # Features live in the compose file, so an install older than them cannot use
       # them. Checked here because turning the portal on is the moment someone starts
       # clicking things that depend on it.
@@ -710,6 +769,13 @@ portal_cmd() {
       # file has to come first.
       set_env COMPOSE_FILE "docker-compose.yml:$PORTAL_OVERRIDE"
       ok "COMPOSE_FILE set in .env"
+
+      # LAST, after every write to .env. set_env no longer clobbers the mode, but
+      # ordering it this way means a future writer that does cannot silently undo the
+      # one thing the portal cannot work without.
+      if set_env_ownership 660 "$CONTAINER_GID"; then
+        ok ".env readable and writable by the app (mode 660, group $CONTAINER_GID)"
+      fi
 
       apply_mounts
       printf '\n  Open %s and go to Settings -> Server\n' "$(appenv APP_URL || echo 'your instance')"
