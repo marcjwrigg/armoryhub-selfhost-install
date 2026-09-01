@@ -187,28 +187,83 @@ pin_version() { set_env ARMORYHUB_VERSION "$1"; }
 #
 # Runs even when the image is already current, because the two version independently:
 # a fix to this file ships without an image release.
-#
-# Written to a sibling then renamed, never copied over in place: rename swaps the
-# directory entry and leaves the running script's inode alone, whereas cp truncates the
-# file this shell is still reading from.
 HELPER_URL="https://raw.githubusercontent.com/marcjwrigg/armoryhub-selfhost-install/main/armoryhub"
+
 update_helper() {
-  NEW="$0.new"
-  if curl -fsSL -m 15 "$HELPER_URL" -o "$NEW" 2>/dev/null && sh -n "$NEW" 2>/dev/null; then
-    if cmp -s "$NEW" "$0"; then
-      rm -f "$NEW"
-    elif mv "$NEW" "$0" 2>/dev/null && chmod +x "$0" 2>/dev/null; then
-      echo "  armoryhub command updated"
-    elif sudo mv "$NEW" "$0" 2>/dev/null && sudo chmod +x "$0" 2>/dev/null; then
-      echo "  armoryhub command updated"
-    else
-      rm -f "$NEW"
-      echo "  a newer armoryhub command is available but could not be written to $0"
-      echo "  update it with:  sudo curl -fsSL $HELPER_URL -o $0 && sudo chmod +x $0"
-    fi
-  else
+  # Downloaded to a temp file in /tmp, NOT to "$0.new".
+  #
+  # $0 is normally /usr/local/bin/armoryhub, and /usr/local/bin is root-owned. So for
+  # anyone running this as their own user — which is the documented way to use it —
+  # curl could not create "$0.new" at all. That failure took the whole condition to
+  # the else branch, which deleted the file and said NOTHING, so the helper was never
+  # replaced and `update` reported success every single time. Found on a box happily
+  # running 0.1.8 whose helper was still the 0.1.7 one, with no `portal` command and
+  # no indication anything was wrong.
+  #
+  # Fetching somewhere writable separates two failures that are not alike: the
+  # download either works or is a network problem, and only INSTALLING it needs
+  # privileges — which is the part that has a sudo fallback and a message worth
+  # printing. Every branch below now says something.
+  NEW=$(mktemp 2>/dev/null) || NEW="/tmp/armoryhub-helper.$$"
+
+  if ! curl -fsSL -m 15 "$HELPER_URL" -o "$NEW" 2>/dev/null; then
     rm -f "$NEW"
+    echo "  could not check for a newer armoryhub command (no route to github?)"
+    return 0
   fi
+
+  # A truncated or HTML error page must never be installed over the one working tool
+  # the operator has.
+  if ! sh -n "$NEW" 2>/dev/null; then
+    rm -f "$NEW"
+    echo "  the downloaded armoryhub command is not valid shell — keeping this one"
+    return 0
+  fi
+
+  if cmp -s "$NEW" "$0"; then
+    rm -f "$NEW"
+    return 0
+  fi
+
+  # Staged in the DESTINATION directory, then renamed over the target.
+  #
+  # Both halves matter. Rename swaps the directory entry and leaves the running
+  # script's inode alone, whereas writing to $0 directly truncates the file this
+  # shell is still reading from. And the staging file has to be on the destination's
+  # own filesystem, because `mv` across filesystems is a copy that opens the target
+  # with O_TRUNC — which is the very thing rename is being used to avoid.
+  STAGE="$0.new"
+  if cp "$NEW" "$STAGE" 2>/dev/null && mv "$STAGE" "$0" 2>/dev/null && chmod +x "$0" 2>/dev/null; then
+    rm -f "$NEW"
+    echo "  armoryhub command updated"
+    return 0
+  fi
+  rm -f "$STAGE"
+
+  if sudo -n true 2>/dev/null \
+     && sudo cp "$NEW" "$STAGE" 2>/dev/null \
+     && sudo mv "$STAGE" "$0" 2>/dev/null \
+     && sudo chmod +x "$0" 2>/dev/null; then
+    rm -f "$NEW"
+    echo "  armoryhub command updated"
+    return 0
+  fi
+  sudo -n rm -f "$STAGE" 2>/dev/null || rm -f "$STAGE" 2>/dev/null || true
+  rm -f "$NEW"
+
+  # Named loudly, because this is the state that used to be silent. An operator who
+  # does not run this command keeps an old helper for ever, and the symptom is a
+  # documented command that does not exist.
+  echo
+  echo "  A NEWER armoryhub command is available but $0"
+  echo "  could not be written (it is owned by root, and this is not running as root)."
+  echo
+  echo "  Install it with:"
+  echo "    sudo curl -fsSL $HELPER_URL -o $0 && sudo chmod +x $0"
+  echo
+  echo "  Everything else updated fine. Until you run that, this command stays on its"
+  echo "  current version and new subcommands will not exist."
+  echo
 }
 
 ts_domain() {
