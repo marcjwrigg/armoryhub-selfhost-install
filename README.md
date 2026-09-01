@@ -522,12 +522,48 @@ armoryhub restore <stamp>   # asks for confirmation, stops and restarts the app
 armoryhub password          # reset the account password
 armoryhub update            # pull and restart, or say you are already current
 armoryhub portal on|off     # manage this server from the browser
+armoryhub compose refresh   # bring docker-compose.yml up to date
 ```
 
 **`armoryhub doctor` is the one to run when something is wrong.** It checks the
 containers, whether the app answers, whether HTTPS actually works end to end, whether
 your compose file has been rewritten, whether the database is on storage that will
 corrupt it, free space, and backup age — and tells you what to do about each.
+
+### If `armoryhub update` runs but nothing seems to change
+
+Two things do not update themselves in versions up to and including 0.1.8. Both are
+fixed from 0.1.9 onward, but the fix cannot apply retroactively — the broken code is
+in the copy you already have — so if you installed before then, do each of these once.
+
+**1. The `armoryhub` command itself.** It fetched its own replacement into
+`/usr/local/bin`, which is owned by root, so running `armoryhub update` as your own
+user could not write the file — and the failure was silent. The symptom is a command
+that stays on an old version for ever: new subcommands like `portal` simply do not
+exist, and `update` keeps behaving the way the old version did.
+
+```bash
+# Note the raw.githubusercontent URL: only install.sh has a website rewrite.
+sudo curl -fsSL https://raw.githubusercontent.com/marcjwrigg/armoryhub-selfhost-install/main/armoryhub \
+  -o /usr/local/bin/armoryhub && sudo chmod +x /usr/local/bin/armoryhub
+```
+
+From 0.1.9 the download goes somewhere writable first, so it either installs itself
+via `sudo` or tells you plainly that it could not.
+
+**2. `docker-compose.yml`.** It is written once, when you install, and `update`
+only ever moved the image version in `.env`. That was harmless while releases only
+changed the image, but features now live in the compose file too — so an old file
+means those features do nothing at all while appearing to be configured. Setting a
+backup path, for instance, would write the value, restart, report success, and leave
+your backups exactly where they were.
+
+```bash
+armoryhub compose refresh    # keeps a timestamped copy of your current file first
+armoryhub compose diff       # see what would change, before changing it
+```
+
+`armoryhub doctor` now reports both, and `update` refreshes the compose file for you.
 
 If `armoryhub` says "command not found", the installer could not write to
 `/usr/local/bin` — it needs sudo, which it will not use unattended. The helper is in
@@ -720,6 +756,12 @@ armoryhub portal status   # is it on, and is the socket actually reachable
 armoryhub portal off      # removes the override and the access with it
 ```
 
+`armoryhub portal on` also adjusts `.env` so the app can read it: the file is mode
+600 and owned by you, while the app runs as a different user, so without this the
+Config and Updates tabs fail with a permission error. It becomes group-owned by the
+app's group with mode 660 — you keep full access, the app gains it, and nobody else
+does. `armoryhub portal off` puts it back to 600.
+
 Everything the page does also works from this command line, so leaving it off costs you
 convenience rather than capability. Two things stay CLI-only on purpose:
 
@@ -746,6 +788,23 @@ docker compose up -d
 
 **Start with `armoryhub doctor`.** It diagnoses most of what follows and tells you what
 to do about it.
+
+**`armoryhub portal` says "unknown command".** Your `armoryhub` command is older than
+the version you are running — see "If `armoryhub update` runs but nothing seems to
+change" above. One `sudo curl` fixes it.
+
+**The portal's Config or Updates tab says "permission denied, open /host/.env".** The
+app cannot read your `.env`. Run `armoryhub portal on` again; it sets the ownership
+the app needs.
+
+**The portal's Overview says you have no backups, but the Backups tab lists them.**
+Your `docker-compose.yml` predates the mount the Overview page reads through. Run
+`armoryhub compose refresh`. The Backups tab works either way because it asks the
+backup service directly rather than reading the directory itself.
+
+**A backup path you set had no effect.** Same cause: an old `docker-compose.yml` does
+not reference `BACKUP_PATH`, so nothing consumed it. `armoryhub compose refresh`,
+then set it again and confirm with `armoryhub backup list`.
 
 **The page is blank, or the certificate looks wrong.** Ask Tailscale directly — it
 prints the real error where the browser shows you nothing:
@@ -982,4 +1041,4 @@ the machine first.
 
 ---
 
-Version: `0.1.8`
+Version: `0.1.9`

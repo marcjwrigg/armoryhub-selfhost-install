@@ -14,6 +14,7 @@
 #                             (--force to re-pull and restart even if current)
 #   armoryhub portal on|off   manage this server from the browser
 #                             (mounts the Docker socket — read what it prints)
+#   armoryhub compose refresh update docker-compose.yml to the current release
 #
 # ## Why this exists rather than documenting docker compose commands
 #
@@ -419,6 +420,124 @@ apply_mounts() {
   fi
 }
 
+# --- keeping docker-compose.yml current --------------------------------------
+# The compose file is written once by install.sh and, until now, never again.
+# `update` moved ARMORYHUB_VERSION in .env and nothing else, which was fine while
+# releases only ever changed the image.
+#
+# 0.1.8 broke that assumption. BACKUP_PATH, BACKUP_MIRROR_PATH and the /backups mount
+# on the app service all live in the compose file, so on an install that predates them
+# `armoryhub backup path` wrote the variable to .env, recreated the containers,
+# reported success — and did nothing at all, because no service referenced it. An
+# operator would believe their backups had moved off the data disk when they had not.
+# That is the single worst way for this feature to fail.
+#
+# So the file is now kept current, with the previous one saved next to it. The old
+# promise was "nothing rewrites docker-compose.yml, so local edits survive"; it is now
+# "local edits are backed up and recoverable", which is the weaker promise that lets
+# the features actually work.
+COMPOSE_LOCAL="$DIR/docker-compose.yml"
+
+# The published file, downloaded for comparison. Prints the temp path on success.
+fetch_published_compose() {
+  _t=$(mktemp 2>/dev/null) || _t="/tmp/armoryhub-compose.$$"
+  if curl -fsSL -m 20 "$COMPOSE_URL" -o "$_t" 2>/dev/null \
+     && [ -s "$_t" ] && grep -q '^services:' "$_t"; then
+    printf '%s' "$_t"
+    return 0
+  fi
+  rm -f "$_t"
+  return 1
+}
+
+# Does the local file differ from the published one, ignoring the app-card icon?
+#
+# The icon line has to be excluded or every Tailscale install reports drift for ever:
+# the published file carries the icon as a data: URI, because at publish time nobody
+# knows what the machine will be called, and install.sh rewrites it to the real
+# hostname once Tailscale has registered. That single expected difference would
+# otherwise make this check cry wolf on every run.
+compose_differs() {
+  [ -f "$COMPOSE_LOCAL" ] || return 0
+  sed '/^  icon:/d' "$COMPOSE_LOCAL" > "$1.local" 2>/dev/null || return 0
+  sed '/^  icon:/d' "$1" > "$1.pub" 2>/dev/null || return 0
+  if cmp -s "$1.local" "$1.pub"; then return 1; fi
+  return 0
+}
+
+# Replace docker-compose.yml with the published one.
+#
+# Order matters: validate, back up, then install. A published file that does not
+# parse against this install's .env must never reach the point of replacing a working
+# one — that would leave an instance that cannot start and an operator with no UI to
+# fix it from.
+install_published_compose() {
+  _pub="$1"
+
+  # Validated with an explicit -f so COMPOSE_FILE in .env cannot pull the portal
+  # override into a check of the base file on its own.
+  if ! ( cd "$DIR" && docker compose -f "$_pub" config -q ) >/dev/null 2>&1; then
+    bad "the published compose file does not validate against your .env"
+    info "nothing was changed. Your compose file is untouched."
+    info "see why:  cd $DIR && docker compose -f $_pub config"
+    return 1
+  fi
+
+  _stamp=$(date -u +%Y%m%dT%H%M%SZ)
+  _bak="$COMPOSE_LOCAL.bak-$_stamp"
+  if [ -f "$COMPOSE_LOCAL" ] && ! cp "$COMPOSE_LOCAL" "$_bak"; then
+    bad "could not back up your current compose file — not replacing it"
+    return 1
+  fi
+
+  # Carry the resolved icon across. Cosmetic, but refreshing would otherwise revert a
+  # Tailscale install to the low-resolution embedded copy on every update.
+  _icon=$(sed -n 's/^  icon: \(https:.*\)/\1/p' "$COMPOSE_LOCAL" 2>/dev/null | head -1)
+  if [ -n "$_icon" ]; then
+    sed "s|^  icon: data:image/png.*|  icon: $_icon|" "$_pub" > "$_pub.iconed" \
+      && mv "$_pub.iconed" "$_pub"
+  fi
+
+  if ! cp "$_pub" "$COMPOSE_LOCAL"; then
+    bad "could not write $COMPOSE_LOCAL"
+    info "your previous file is still at $_bak"
+    return 1
+  fi
+
+  ok "docker-compose.yml updated"
+  info "your previous file: $(basename "$_bak")"
+  info "see what changed:   diff $_bak $COMPOSE_LOCAL"
+  return 0
+}
+
+# Refresh if needed. Quiet when there is nothing to do, so `update` on a current
+# install stays silent.
+compose_refresh() {
+  PUB=$(fetch_published_compose || true)
+  if [ -z "$PUB" ]; then
+    [ "${1:-}" = "quiet" ] || warn "could not download the current compose file to compare"
+    return 0
+  fi
+
+  if ! compose_differs "$PUB"; then
+    rm -f "$PUB" "$PUB.local" "$PUB.pub"
+    [ "${1:-}" = "quiet" ] || ok "docker-compose.yml is current"
+    return 0
+  fi
+
+  echo
+  echo "  Your docker-compose.yml is older than this version."
+  echo "  Features added since it was written — including where backups are stored —"
+  echo "  do nothing until it is updated."
+  echo
+  install_published_compose "$PUB" || { rm -f "$PUB" "$PUB.local" "$PUB.pub"; return 1; }
+  rm -f "$PUB" "$PUB.local" "$PUB.pub"
+  COMPOSE_REFRESHED=yes
+  return 0
+}
+
+COMPOSE_REFRESHED=""
+
 # --- the management portal ---------------------------------------------------
 # Turning the portal on means mounting the Docker socket into the app container,
 # and that is not a small thing: the Docker socket is root on the host. A container
@@ -435,6 +554,32 @@ apply_mounts() {
 # automatically by every subsequent `docker compose` command in this directory,
 # including the ones inside `armoryhub update`.
 PORTAL_OVERRIDE="docker-compose.portal.yml"
+
+# The app container runs as uid 1001 (nextjs, gid 1001) and .env is mode 600 owned by
+# the operator, so out of the box the portal could not read its own configuration:
+# every Config request failed with EACCES on /host/.env, and the Updates tab failed
+# with it too because it reads the pinned version from there.
+#
+# Fixed by group, not by opening the file up. Owner stays the operator so they can
+# still edit it by hand; the group becomes the container's, and mode 660 gives exactly
+# those two parties access and nobody else. The file holds every password for the
+# install, so "make it 644" is not an option.
+#
+# Done inside a throwaway container because a non-root user cannot chgrp a file to a
+# group they are not in — the same reason install.sh sets up ./data this way.
+CONTAINER_GID=1001
+
+set_env_ownership() {
+  _mode="$1"; _group="$2"
+  if ! docker run --rm -v "$DIR:/d" alpine:latest \
+        sh -c "chown $(id -u):$_group /d/.env && chmod $_mode /d/.env" >/dev/null 2>&1; then
+    warn "could not set ownership on .env"
+    info "the portal may not be able to read your configuration"
+    info "fix it by hand:  sudo chown $(id -u):$_group $DIR/.env && sudo chmod $_mode $DIR/.env"
+    return 1
+  fi
+  return 0
+}
 
 write_portal_override() {
   # The docker group's gid on THIS host, which is what the app container has to
@@ -552,6 +697,15 @@ portal_cmd() {
       write_portal_override
       ok "wrote $DIR/$PORTAL_OVERRIDE"
 
+      if set_env_ownership 660 "$CONTAINER_GID"; then
+        ok ".env readable and writable by the app (mode 660, group $CONTAINER_GID)"
+      fi
+
+      # Features live in the compose file, so an install older than them cannot use
+      # them. Checked here because turning the portal on is the moment someone starts
+      # clicking things that depend on it.
+      compose_refresh quiet || true
+
       # Both files, in order. Compose applies later files as overrides, so the base
       # file has to come first.
       set_env COMPOSE_FILE "docker-compose.yml:$PORTAL_OVERRIDE"
@@ -572,6 +726,10 @@ portal_cmd() {
       ok "COMPOSE_FILE reset in .env"
       rm -f "$DIR/$PORTAL_OVERRIDE"
       ok "removed $PORTAL_OVERRIDE"
+      # Back to owner-only. Nothing else needs to read it once the app cannot.
+      if set_env_ownership 600 "$(id -g)"; then
+        ok ".env restored to mode 600, group $(id -g)"
+      fi
       apply_mounts
       printf '\n  The app no longer has the Docker socket.\n'
       printf '  Everything still works from here:  armoryhub doctor\n\n' ;;
@@ -832,7 +990,26 @@ doctor() {
     fi
   fi
 
-  # 9. The management portal, if it is on.
+  # 9. Is docker-compose.yml current?
+  #
+  # Reported because a stale one fails silently rather than loudly. `update` moves the
+  # image and the compose file is written once at install time, so an install can run
+  # a new version against an old file — and every feature that lives in that file
+  # then does nothing while appearing to be configured.
+  PUBC=$(fetch_published_compose || true)
+  if [ -n "$PUBC" ]; then
+    if compose_differs "$PUBC"; then
+      warn "docker-compose.yml is older than the current release"
+      info "features added since it was written do nothing until it is updated,"
+      info "including where backups are stored"
+      info "update it with:  armoryhub compose refresh"
+    else
+      ok "docker-compose.yml is current"
+    fi
+    rm -f "$PUBC" "$PUBC.local" "$PUBC.pub"
+  fi
+
+  # 10. The management portal, if it is on.
   #
   # Reported because it is the one setting here that widens what the app can do to
   # the host, so it should never be something an operator has to go looking for to
@@ -852,7 +1029,7 @@ doctor() {
     fi
   fi
 
-  # 10. Compose version, for whoever still uses compose directly
+  # 11. Compose version, for whoever still uses compose directly
   CV=$(docker compose version --short 2>/dev/null | tr -d 'v' || echo "")
   if [ -n "$CV" ]; then
     MAJ=${CV%%.*}; REST=${CV#*.}; MIN=${REST%%.*}
@@ -892,6 +1069,7 @@ doctor() {
                                   (a version pins it, e.g. to roll back;
                                    nothing is restarted if already current)
     armoryhub portal on|off       manage this server from the browser
+    armoryhub compose refresh     bring docker-compose.yml up to date
 
 CMDS
   [ "$PROBLEMS" -gt 0 ] && exit 1
@@ -1034,6 +1212,33 @@ case "$CMD" in
     SUB="${1:-status}"; [ $# -gt 0 ] && shift
     portal_cmd "$SUB" ;;
 
+  compose)
+    SUB="${1:-status}"; [ $# -gt 0 ] && shift
+    case "$SUB" in
+      status)
+        PUBC=$(fetch_published_compose || die "could not download the current compose file")
+        if compose_differs "$PUBC"; then
+          printf '\n  docker-compose.yml is OLDER than the current release.\n'
+          printf '  Update it with:  armoryhub compose refresh\n'
+          printf '  See what would change:  armoryhub compose diff\n\n'
+        else
+          printf '\n  docker-compose.yml is current.\n\n'
+        fi
+        rm -f "$PUBC" "$PUBC.local" "$PUBC.pub" ;;
+      diff)
+        PUBC=$(fetch_published_compose || die "could not download the current compose file")
+        diff -u "$COMPOSE_LOCAL" "$PUBC" || true
+        rm -f "$PUBC" "$PUBC.local" "$PUBC.pub" ;;
+      refresh)
+        compose_refresh || exit 1
+        if [ -n "$COMPOSE_REFRESHED" ]; then
+          apply_mounts
+        else
+          printf '\n  Nothing to do.\n\n'
+        fi ;;
+      *) die "usage: armoryhub compose status|diff|refresh" ;;
+    esac ;;
+
   update)
     [ -d "$DIR" ] || die "install not found at $DIR"
     cd "$DIR"
@@ -1091,8 +1296,21 @@ case "$CMD" in
       if [ -z "$MISSING" ]; then
         printf '\n'
         ok "already on $TARGET — the current release"
-        info "nothing pulled, nothing restarted"
-        info "re-pull and restart anyway with:  armoryhub update --force"
+
+        # Checked even here, because the image version and the compose file move
+        # independently. This exact case is how the problem was found: a box on 0.1.8
+        # with a 0.1.7 compose file, where `backup path` wrote a variable nothing
+        # read. Being on the current image is not the same as being current.
+        compose_refresh quiet || true
+
+        if [ -n "$COMPOSE_REFRESHED" ]; then
+          echo
+          echo "  Applying the updated compose file..."
+          docker compose up -d
+        else
+          info "nothing pulled, nothing restarted"
+          info "re-pull and restart anyway with:  armoryhub update --force"
+        fi
         update_helper
         printf '\n'
         exit 0
@@ -1117,6 +1335,10 @@ case "$CMD" in
       echo "  forcing a re-pull and restart of $TARGET"
     fi
 
+    # Before the pull, so a compose file that fails to validate stops the upgrade
+    # while the instance is still running on its current version.
+    compose_refresh quiet || true
+
     docker compose pull
     docker compose down --remove-orphans
     docker compose up -d
@@ -1135,7 +1357,7 @@ case "$CMD" in
     echo "  Run 'armoryhub doctor' to confirm." ;;
 
   -h|--help|help)
-    sed -n '3,17p' "$0" | sed 's/^# \{0,1\}//' ;;
+    sed -n '3,18p' "$0" | sed 's/^# \{0,1\}//' ;;
 
   *) die "unknown command '$CMD' — try: armoryhub help" ;;
 esac
