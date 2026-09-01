@@ -6,9 +6,14 @@
 #   armoryhub logs [service]  follow logs (default: app)
 #   armoryhub url             print the address to open
 #   armoryhub backup list|now|verify [stamp]
+#   armoryhub backup path [dir]        where backups are written
+#   armoryhub backup mirror [dir|now|off]  optional second copy
 #   armoryhub restore <stamp>
 #   armoryhub password        reset the account password
 #   armoryhub update [ver]    move to the latest version and restart
+#                             (--force to re-pull and restart even if current)
+#   armoryhub portal on|off   manage this server from the browser
+#                             (mounts the Docker socket — read what it prints)
 #
 # ## Why this exists rather than documenting docker compose commands
 #
@@ -45,6 +50,7 @@ container() { docker ps -q -f "label=com.docker.compose.project=$PROJECT" -f "na
 
 APP=$(container app || true)
 TS=$(container tailscale || true)
+BK=$(container backup || true)
 
 if [ -z "$DIR" ] && [ -n "$APP" ]; then
   DIR=$(docker inspect "$APP" --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' 2>/dev/null || true)
@@ -63,6 +69,48 @@ IMAGE=""
 [ -n "$APP" ] && IMAGE=$(docker inspect "$APP" --format '{{.Config.Image}}' 2>/dev/null || true)
 NETWORK="${PROJECT}_default"
 
+# --- where the backups actually are ------------------------------------------
+# Asked of Docker, not assumed to be $DIR/data/backups.
+#
+# BACKUP_PATH and BACKUP_MIRROR_PATH let the operator put these anywhere — a second
+# disk, a NAS, a USB stick — and the whole point of the feature is that they are NOT
+# under the install directory. Hardcoding that path would have made every command
+# here silently operate on an empty directory the moment someone used the setting,
+# which for `backup list` and `restore` is about the worst outcome available.
+#
+# Same principle as the rest of this file: the running container is the source of
+# truth, so a rewritten compose file cannot mislead it.
+mount_source() {
+  [ -n "$1" ] || return 1
+  docker inspect "$1" --format \
+    "{{range .Mounts}}{{if eq .Destination \"$2\"}}{{.Source}}{{end}}{{end}}" 2>/dev/null
+}
+
+# Read a variable out of a container's environment.
+cenv() {
+  [ -n "$1" ] || return 1
+  docker inspect "$1" --format "{{range .Config.Env}}{{println .}}{{end}}" 2>/dev/null \
+    | sed -n "s/^$2=//p" | head -1
+}
+
+BACKUPS_HOST=""
+MIRROR_HOST=""
+DATA_HOST=""
+MIRROR_ON="false"
+if [ -n "$BK" ]; then
+  BACKUPS_HOST=$(mount_source "$BK" /backups || true)
+  MIRROR_HOST=$(mount_source "$BK" /mirror || true)
+  DATA_HOST=$(mount_source "$BK" /data || true)
+  MIRROR_ON=$(cenv "$BK" BACKUP_MIRROR_ENABLED || true)
+fi
+# Fall back to the layout install.sh creates, for a stopped backup sidecar.
+[ -n "$BACKUPS_HOST" ] || BACKUPS_HOST="$DIR/data/backups"
+[ -n "$DATA_HOST" ] || DATA_HOST="$DIR/data/app"
+[ "$MIRROR_ON" = "true" ] || MIRROR_HOST=""
+# The compose file mounts /mirror unconditionally, so it can legitimately point at
+# the same place as /backups. That is not a second copy.
+[ "$MIRROR_HOST" = "$BACKUPS_HOST" ] && MIRROR_HOST=""
+
 # The version this install is running, and the version new installs get. Shared by
 # doctor and update so there is one URL and one parse rather than two that can drift.
 COMPOSE_URL="https://raw.githubusercontent.com/marcjwrigg/armoryhub-selfhost-install/main/docker-compose.yml"
@@ -74,6 +122,93 @@ running_version() { printf '%s' "${IMAGE:-}" | sed -n 's/.*armoryhub-selfhost://
 latest_version() {
   curl -fsSL -m 5 "$COMPOSE_URL" 2>/dev/null \
     | sed -n 's/.*armoryhub-selfhost:${ARMORYHUB_VERSION:-\([^}]*\)}.*/\1/p' | head -1
+}
+
+# Which services this install expects to be running.
+#
+# db/app/backup always; the optional sidecars only when COMPOSE_PROFILES asks for
+# them. Reading .env is fine here — unlike docker-compose.yml, it belongs to the
+# operator and no dashboard rewrites it.
+wanted_services() {
+  W="db app backup"
+  P=$(sed -n 's/^COMPOSE_PROFILES=//p' "$DIR/.env" 2>/dev/null | head -1)
+  case "$P" in *tailscale*) W="$W tailscale" ;; esac
+  case "$P" in *caddy*) W="$W caddy" ;; esac
+  printf '%s' "$W"
+}
+
+missing_services() {
+  M=""
+  for s in $(wanted_services); do
+    [ -n "$(container "$s")" ] || M="$M $s"
+  done
+  printf '%s' "$M"
+}
+
+# Move the version pin in .env. Writes only when it would change something, so the
+# no-op path of `update` leaves the file's mtime alone.
+#
+# docker-compose.yml pins the image tag, and that file is written once at install time
+# and never touched again. `docker compose pull` against it therefore re-pulls the tag
+# already pinned: an instance installed at 0.1.6 stays on 0.1.6 for ever, while the
+# command reports success. The pin is deliberate — it is what makes an install
+# reproducible — but nothing was ever moving it.
+#
+# ARMORYHUB_VERSION in .env is what shifts it. The compose file already reads
+# ${ARMORYHUB_VERSION:-<pinned>}, .env belongs to the operator rather than being
+# generated, and writing there leaves any local compose edits — or a dashboard's
+# rewrite of that file — completely alone.
+# Set one key in .env, in place, preserving everything else including comments.
+#
+# Writes only when the value would change, so a no-op command leaves the file's
+# mtime alone. Values are used as a sed replacement, so | is rejected rather than
+# silently corrupting the file.
+set_env() {
+  _k="$1"; _v="$2"
+  case "$_v" in
+    *"|"*) die "'|' cannot appear in a value written to .env ($_k)" ;;
+  esac
+  _cur=$(sed -n "s/^$_k=//p" "$DIR/.env" 2>/dev/null | head -1)
+  [ "$_cur" = "$_v" ] && return 0
+  umask 077
+  if grep -q "^$_k=" "$DIR/.env" 2>/dev/null; then
+    sed "s|^$_k=.*|$_k=$_v|" "$DIR/.env" > "$DIR/.env.new" && mv "$DIR/.env.new" "$DIR/.env"
+  else
+    printf '%s=%s\n' "$_k" "$_v" >> "$DIR/.env"
+  fi
+  chmod 600 "$DIR/.env"
+}
+
+pin_version() { set_env ARMORYHUB_VERSION "$1"; }
+
+# Update this script too. `docker compose pull` refreshes the image; this file lives on
+# the host and nothing else would ever replace it, so without this the helper silently
+# ages out while the app moves on.
+#
+# Runs even when the image is already current, because the two version independently:
+# a fix to this file ships without an image release.
+#
+# Written to a sibling then renamed, never copied over in place: rename swaps the
+# directory entry and leaves the running script's inode alone, whereas cp truncates the
+# file this shell is still reading from.
+HELPER_URL="https://raw.githubusercontent.com/marcjwrigg/armoryhub-selfhost-install/main/armoryhub"
+update_helper() {
+  NEW="$0.new"
+  if curl -fsSL -m 15 "$HELPER_URL" -o "$NEW" 2>/dev/null && sh -n "$NEW" 2>/dev/null; then
+    if cmp -s "$NEW" "$0"; then
+      rm -f "$NEW"
+    elif mv "$NEW" "$0" 2>/dev/null && chmod +x "$0" 2>/dev/null; then
+      echo "  armoryhub command updated"
+    elif sudo mv "$NEW" "$0" 2>/dev/null && sudo chmod +x "$0" 2>/dev/null; then
+      echo "  armoryhub command updated"
+    else
+      rm -f "$NEW"
+      echo "  a newer armoryhub command is available but could not be written to $0"
+      echo "  update it with:  sudo curl -fsSL $HELPER_URL -o $0 && sudo chmod +x $0"
+    fi
+  else
+    rm -f "$NEW"
+  fi
 }
 
 ts_domain() {
@@ -90,22 +225,304 @@ backup_cmd() {
   ADMIN_URL=$(appenv DATABASE_ADMIN_URL || true)
   if [ -z "$ADMIN_URL" ]; then
     # The app runs as a non-owner role and has no admin URL; the backup sidecar does.
-    BK=$(container backup || true)
-    [ -n "$BK" ] && ADMIN_URL=$(docker inspect "$BK" --format "{{range .Config.Env}}{{println .}}{{end}}" \
-      | sed -n 's/^DATABASE_ADMIN_URL=//p' | head -1)
+    ADMIN_URL=$(cenv "$BK" DATABASE_ADMIN_URL || true)
   fi
   [ -n "$ADMIN_URL" ] || die "Could not determine the database URL from the running containers."
+
+  # The mirror is passed through so `list`, `verify` and `restore` can see it. That
+  # matters most in the one case the mirror exists for: when the primary is the disk
+  # that failed, restore has to be able to read from the second copy.
+  MIRROR_ARGS=""
+  if [ -n "$MIRROR_HOST" ]; then
+    MIRROR_ARGS="-v $MIRROR_HOST:/mirror -e BACKUP_MIRROR_ENABLED=true"
+  fi
 
   # --entrypoint is required, not optional. The image's default entrypoint boots the
   # app and validates DATABASE_URL first, so passing backup.sh as arguments just gets
   # ignored and fails with "DATABASE_URL must be set". The compose restore service
   # overrides entrypoint for the same reason.
+  #
+  # shellcheck disable=SC2086  # MIRROR_ARGS must word-split into separate flags
   docker run --rm -i --network "$NETWORK" \
     --entrypoint /bin/sh \
     -e DATABASE_ADMIN_URL="$ADMIN_URL" \
     -e BACKUP_DIR=/backups -e FILES_DIR=/data/files \
-    -v "$DIR/data/app:/data" -v "$DIR/data/backups:/backups" \
+    -e BACKUP_MIRROR_DIR=/mirror \
+    -v "$DATA_HOST:/data" -v "$BACKUPS_HOST:/backups" \
+    $MIRROR_ARGS \
     "$IMAGE" /app/backup.sh "$@"
+}
+
+# --- setting a backup destination --------------------------------------------
+# Prepare a directory to receive backups: create it, give it to the container's
+# user, and write the marker file.
+#
+# Everything happens inside a throwaway container, for two reasons. It needs no root
+# on the host — the same trick install.sh uses for ./data — and the directory ends up
+# owned by uid 1001 with mode 750, which means the host account can READ its own
+# backups through the group but cannot write the marker from outside. So the marker
+# has to be written in here too.
+#
+# The marker is written LAST. It is the flag that says "this directory is a
+# configured ArmoryHub backup destination", and a half-prepared directory carrying
+# that flag would defeat the check it exists for.
+prepare_backup_dir() {
+  _d="$1"
+  case "$_d" in
+    /*) ;;
+    *) die "the backup path must be absolute, e.g. /mnt/disk2/armoryhub-backups
+    got: $_d" ;;
+  esac
+
+  mkdir -p "$_d" 2>/dev/null || die "could not create $_d
+    Create it yourself and make sure this account can write to it, then try again."
+
+  if ! docker run --rm -v "$_d:/t" alpine:latest sh -c "
+        chown -R 1001:$(id -g) /t && chmod 750 /t &&
+        printf '%s\n' \
+          'ArmoryHub backup destination.' \
+          '' \
+          'Do NOT delete this file. ArmoryHub checks for it before writing backups' \
+          'here, because a bind mount whose source has gone does not fail — Docker' \
+          'quietly creates an empty directory on the root disk instead. This file' \
+          'lives on the real destination, so it disappears when the destination' \
+          'does, and its absence is what stops backups being written to the wrong' \
+          'disk without anyone noticing.' \
+          '' \
+          \"configured: \$(date -u +%Y-%m-%dT%H:%M:%SZ)\" > /t/.armoryhub-backups &&
+        chown 1001:$(id -g) /t/.armoryhub-backups" >/dev/null 2>&1
+  then
+    die "could not prepare $_d.
+    Check that Docker can bind-mount it and that the path is not read-only."
+  fi
+}
+
+# Copy existing backups into a new destination.
+#
+# Copy, never move. The originals stay where they are until the operator decides to
+# remove them, because "relocate my backups" going wrong halfway is exactly the
+# situation that must not be able to lose the only copy.
+#
+# Skipped if the destination already holds backups, so re-running the command is
+# safe and does not overwrite a destination that is already in use.
+copy_backups() {
+  _from="$1"; _to="$2"
+  _n=$(docker run --rm -v "$_to:/to:ro" alpine:latest \
+         sh -c 'ls -1 /to/db-*.dump 2>/dev/null | wc -l' 2>/dev/null | tr -d ' ' || echo 0)
+  if [ "${_n:-0}" -gt 0 ]; then
+    info "$_to already holds $_n backup(s) — leaving them alone"
+    return 0
+  fi
+  _m=$(docker run --rm -v "$_from:/from:ro" alpine:latest \
+         sh -c 'ls -1 /from/db-*.dump 2>/dev/null | wc -l' 2>/dev/null | tr -d ' ' || echo 0)
+  if [ "${_m:-0}" -eq 0 ]; then
+    info "nothing to copy from $_from"
+    return 0
+  fi
+  printf '    copying %s existing backup(s)...' "$_m"
+  if docker run --rm -v "$_from:/from:ro" -v "$_to:/to" alpine:latest sh -c "
+        cp -a /from/. /to/ && chown -R 1001:$(id -g) /to" >/dev/null 2>&1; then
+    printf ' done\n'
+    info "the originals are still in $_from — delete them when you are satisfied"
+  else
+    printf ' FAILED\n'
+    warn "could not copy the existing backups; the new destination is empty"
+    info "your existing backups are untouched in $_from"
+  fi
+}
+
+# Are two paths on the same filesystem?
+#
+# The entire point of moving backups is to survive the data disk failing, so a
+# destination on that same disk is worth saying out loud. Not refused — someone may
+# be staging a move, or using a path that is about to become a mount point.
+same_filesystem() {
+  _a=$(df -P "$1" 2>/dev/null | awk 'NR==2{print $1}')
+  _b=$(df -P "$2" 2>/dev/null | awk 'NR==2{print $1}')
+  [ -n "$_a" ] && [ "$_a" = "$_b" ]
+}
+
+# Recreate the containers so a changed mount takes effect.
+#
+# This is the one operation in this file that genuinely cannot avoid the compose
+# file: a bind mount is fixed at container creation, so there is no Docker-level
+# "restart with a different volume". `docker compose up -d` recreates only what
+# changed, which is the app, backup and restore services.
+apply_mounts() {
+  echo
+  echo "  Recreating the containers so the new path takes effect..."
+  if ( cd "$DIR" && docker compose up -d ); then
+    echo
+    ok "done"
+  else
+    echo
+    bad "could not recreate the containers"
+    info "the setting is saved in $DIR/.env but is not live yet"
+    info "if docker-compose.yml has been rewritten by a dashboard, restore it:"
+    info "  cd $DIR && cp docker-compose.yml.bak docker-compose.yml && docker compose up -d"
+    exit 1
+  fi
+}
+
+# --- the management portal ---------------------------------------------------
+# Turning the portal on means mounting the Docker socket into the app container,
+# and that is not a small thing: the Docker socket is root on the host. A container
+# can be created with / bind-mounted and any command, so anything able to drive
+# that socket can do anything to this machine. The app also holds the database
+# credentials and faces the network.
+#
+# So it is off by default, and off means ABSENT rather than merely unused: a default
+# install's compose file has no socket mount in it at all. This command adds it
+# through a separate override file, which is also what makes turning it off again a
+# clean removal rather than an edit that has to be got right.
+#
+# COMPOSE_FILE in .env is how compose is told to load both files. That is read
+# automatically by every subsequent `docker compose` command in this directory,
+# including the ones inside `armoryhub update`.
+PORTAL_OVERRIDE="docker-compose.portal.yml"
+
+write_portal_override() {
+  # The docker group's gid on THIS host, which is what the app container has to
+  # join to use the socket. It differs between distributions — 999 on Debian, 998
+  # on some Arch builds, 20 on Docker Desktop's Linux VM — and getting it wrong
+  # means every portal request fails with a permission error on the socket rather
+  # than anything that names the cause.
+  DGID=$(stat -c %g /var/run/docker.sock 2>/dev/null || stat -f %g /var/run/docker.sock 2>/dev/null || echo "")
+  [ -n "$DGID" ] || die "could not read the group of /var/run/docker.sock
+    Is Docker running, and can this account see the socket?"
+
+  cat > "$DIR/$PORTAL_OVERRIDE" <<YAML
+# ArmoryHub management portal — generated by 'armoryhub portal on'.
+#
+# DELETE THIS FILE, or run 'armoryhub portal off', to remove the portal's access.
+#
+# What this adds to the app container:
+#
+#   /var/run/docker.sock   the Docker socket. This is root-equivalent access to
+#                          this machine: whatever can drive it can create a
+#                          container with / mounted and run anything as root.
+#                          Everything the portal does needs it, and nothing else
+#                          in ArmoryHub uses it.
+#
+#   ./.env                 read-write, so the portal can save settings. Mounted as
+#                          a single FILE, so the app cannot reach ./data/postgres
+#                          or anything else in the install directory.
+#
+#   group_add              the app runs as uid 1001, and the socket is root:docker
+#                          mode 660. Without joining that group every request fails
+#                          with EACCES on the socket.
+#
+# The Compose project name is deliberately NOT set here. The app reads it off its own
+# container's Compose label instead, which is what Compose actually used — asserting a
+# guess would be worse than not knowing, because the value is passed to
+# 'docker compose up -d' and a wrong one creates a second complete stack.
+#
+# Regenerate it after moving the install or changing Docker: armoryhub portal on
+services:
+  app:
+    environment:
+      SERVER_PORTAL_ENABLED: "true"
+      ARMORYHUB_HOST_DIR: "$DIR"
+    group_add:
+      - "$DGID"
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock"
+      - "$DIR/.env:/host/.env"
+      - "$DIR/docker-compose.yml:/host/docker-compose.yml:ro"
+YAML
+  chmod 644 "$DIR/$PORTAL_OVERRIDE"
+}
+
+portal_cmd() {
+  SUB="${1:-status}"
+
+  case "$SUB" in
+    status)
+      printf '\n  Management portal\n  =================\n\n'
+      if [ -f "$DIR/$PORTAL_OVERRIDE" ]; then
+        ok "override file present ($PORTAL_OVERRIDE)"
+      else
+        info "not configured"
+      fi
+      CF=$(sed -n 's/^COMPOSE_FILE=//p' "$DIR/.env" 2>/dev/null | head -1)
+      case "$CF" in
+        *"$PORTAL_OVERRIDE"*) ok "COMPOSE_FILE includes the override" ;;
+        *) info "COMPOSE_FILE does not include the override" ;;
+      esac
+      ENABLED=$(appenv SERVER_PORTAL_ENABLED || true)
+      if [ "$ENABLED" = "true" ]; then
+        ok "the running app has the portal enabled"
+        if [ -n "$APP" ] && docker exec "$APP" test -S /var/run/docker.sock 2>/dev/null; then
+          ok "the Docker socket is mounted and is a socket"
+        else
+          bad "the Docker socket is NOT reachable inside the app container"
+          info "re-run:  armoryhub portal on"
+        fi
+        printf '\n  Open %s and go to Settings -> Server\n' "$(appenv APP_URL || echo 'your instance')"
+      else
+        printf '\n  The portal is OFF.\n'
+        printf '\n  Turn it on with:  armoryhub portal on\n'
+        printf '\n  Read this first: it mounts the Docker socket into the app\n'
+        printf '  container, which is root-equivalent access to this machine.\n'
+        printf '  Everything the portal does also works from this command line.\n'
+      fi
+      printf '\n' ;;
+
+    on)
+      [ -f "$DIR/.env" ] || die "no .env at $DIR"
+      printf '\n  Turning on the management portal\n\n'
+      printf '  This gives the ArmoryHub web app the Docker socket, which is\n'
+      printf '  root-equivalent access to this machine. Anything able to drive that\n'
+      printf '  socket can create a container with / mounted and run anything as root.\n'
+      printf '\n'
+      printf '  In exchange you get doctor, backups, updates, logs and the settings\n'
+      printf '  editor in the browser instead of over SSH.\n'
+      printf '\n'
+      printf '  Every one of those already works from this command line without it.\n'
+      printf '\n'
+      # Read from the terminal explicitly. This may be invoked through a pipe, in
+      # which case a bare `read` consumes the caller's stdin instead of waiting.
+      if [ "${ARMORYHUB_ASSUME_YES:-}" != "1" ]; then
+        if { exec 3</dev/tty; } 2>/dev/null; then
+          printf '  Type yes to continue: '
+          reply=''
+          read -r reply <&3 || reply=''
+          [ "$reply" = "yes" ] || die "cancelled — nothing was changed"
+        else
+          die "no terminal to confirm on.
+    If you meant this, re-run with:  ARMORYHUB_ASSUME_YES=1 armoryhub portal on"
+        fi
+      fi
+
+      write_portal_override
+      ok "wrote $DIR/$PORTAL_OVERRIDE"
+
+      # Both files, in order. Compose applies later files as overrides, so the base
+      # file has to come first.
+      set_env COMPOSE_FILE "docker-compose.yml:$PORTAL_OVERRIDE"
+      ok "COMPOSE_FILE set in .env"
+
+      apply_mounts
+      printf '\n  Open %s and go to Settings -> Server\n' "$(appenv APP_URL || echo 'your instance')"
+      printf '  Turn it off again at any time with:  armoryhub portal off\n\n' ;;
+
+    off)
+      [ -f "$DIR/.env" ] || die "no .env at $DIR"
+      printf '\n  Turning off the management portal\n\n'
+      # The override is removed from COMPOSE_FILE first and the file deleted second,
+      # so a failure between the two leaves compose pointing at a file that still
+      # exists rather than at a missing one — which would break every later
+      # `docker compose` command in this directory, including `armoryhub update`.
+      set_env COMPOSE_FILE "docker-compose.yml"
+      ok "COMPOSE_FILE reset in .env"
+      rm -f "$DIR/$PORTAL_OVERRIDE"
+      ok "removed $PORTAL_OVERRIDE"
+      apply_mounts
+      printf '\n  The app no longer has the Docker socket.\n'
+      printf '  Everything still works from here:  armoryhub doctor\n\n' ;;
+
+    *) die "usage: armoryhub portal status|on|off" ;;
+  esac
 }
 
 # --- doctor ------------------------------------------------------------------
@@ -283,24 +700,104 @@ doctor() {
   elif [ "$AVAIL" -lt 5120 ]; then warn "${AVAIL}MB free at $DIR"
   else ok "$((AVAIL/1024))GB free"; fi
 
-  # 8. Backups: existence is not the point, recency is.
-  if [ -d "$DIR/data/backups" ]; then
-    # shellcheck disable=SC2012  # backup filenames are our own timestamps, no spaces,
-    # and ls -t is the shortest way to get the newest in POSIX sh.
-    NEWEST=$(ls -1t "$DIR/data/backups" 2>/dev/null | head -1 || true)
+  # 8. Backups: existence is not the point. Recency is, and so is WHERE.
+  #
+  # The old version of this check looked in a hardcoded $DIR/data/backups and closed
+  # by telling the operator these live on the same disk as their data. Both are now
+  # answerable rather than assumed: the path is read from the running container, and
+  # whether it shares a filesystem with the data is a question df can settle.
+  if [ -d "$BACKUPS_HOST" ]; then
+    printf '\n  backups:  %s\n' "$BACKUPS_HOST"
+    [ -n "$MIRROR_HOST" ] && printf '  mirror:   %s\n' "$MIRROR_HOST"
+
+    # shellcheck disable=SC2012  # backup filenames are our own timestamps, no spaces
+    NEWEST=$(ls -1 "$BACKUPS_HOST"/db-*.dump 2>/dev/null | sed 's|.*/||' | sort -r | head -1 || true)
     # shellcheck disable=SC2012
-    COUNT=$(ls -1 "$DIR/data/backups" 2>/dev/null | wc -l | tr -d ' ')
+    COUNT=$(ls -1 "$BACKUPS_HOST"/db-*.dump 2>/dev/null | wc -l | tr -d ' ')
     if [ -z "$NEWEST" ]; then
       warn "no backups yet — one runs nightly, or force one with:  armoryhub backup now"
     else
-      AGE=$(( ( $(date +%s) - $(date -r "$DIR/data/backups/$NEWEST" +%s 2>/dev/null || echo 0) ) / 86400 ))
+      AGE=$(( ( $(date +%s) - $(date -r "$BACKUPS_HOST/$NEWEST" +%s 2>/dev/null || echo 0) ) / 86400 ))
       if [ "$AGE" -gt 2 ]; then warn "newest backup is ${AGE} days old ($COUNT total)"
       else ok "backups current — newest ${AGE}d old, $COUNT total"; fi
-      info "these live on the same disk as your data; copy them elsewhere"
+    fi
+
+    # The marker. Its absence on a RELOCATED directory is the silent failure this
+    # whole mechanism exists to catch, so it is a problem rather than a warning:
+    # backups are not being written and the operator does not know.
+    REQ=$(cenv "$BK" BACKUP_REQUIRE_MARKER || true)
+    if [ "$REQ" = "true" ] && [ ! -f "$BACKUPS_HOST/.armoryhub-backups" ]; then
+      bad "the backup destination is not mounted"
+      info "$BACKUPS_HOST has no .armoryhub-backups marker, so it is not the"
+      info "directory that was configured — the mount is missing and Docker created"
+      info "an empty one in its place. NO BACKUPS ARE BEING WRITTEN."
+      info "restore the mount, then:  armoryhub backup now"
+    fi
+
+    # Is it actually somewhere else? This is the question the operator thinks they
+    # answered when they set the path, and the one nothing was checking.
+    if same_filesystem "$BACKUPS_HOST" "$DATA_HOST"; then
+      if [ -n "$MIRROR_HOST" ]; then
+        ok "backups share a disk with your data, but the mirror does not"
+      else
+        warn "backups are on the same filesystem as your data"
+        info "one disk failure loses the records AND every backup of them"
+        info "move them:    armoryhub backup path /mnt/somewhere-else/armoryhub-backups"
+        info "or add a copy: armoryhub backup mirror /mnt/nas/armoryhub-backups"
+      fi
+    else
+      ok "backups are on a different filesystem from your data"
+    fi
+
+    # A mirror that quietly stopped working weeks ago is worse than no mirror,
+    # because the operator believes they have two copies. backup.sh records every
+    # attempt so this does not depend on anyone reading container logs.
+    if [ -n "$MIRROR_HOST" ]; then
+      if [ -f "$BACKUPS_HOST/.mirror-status" ]; then
+        MS_WHEN=$(cut -f1 "$BACKUPS_HOST/.mirror-status" 2>/dev/null || true)
+        MS_RES=$(cut -f2 "$BACKUPS_HOST/.mirror-status" 2>/dev/null || true)
+        MS_DET=$(cut -f3 "$BACKUPS_HOST/.mirror-status" 2>/dev/null || true)
+        if [ "$MS_RES" = "OK" ]; then
+          ok "mirror last succeeded $MS_WHEN"
+        else
+          bad "the mirror is failing: ${MS_DET:-unknown}"
+          info "last attempt $MS_WHEN"
+          info "fix the destination, then:  armoryhub backup mirror now"
+        fi
+      else
+        warn "a mirror is configured but has never run"
+        info "force one:  armoryhub backup mirror now"
+      fi
+      MAVAIL=$(df -Pk "$MIRROR_HOST" 2>/dev/null | awk 'NR==2{print int($4/1024)}' || echo 0)
+      if [ "${MAVAIL:-0}" -lt 1024 ]; then
+        bad "only ${MAVAIL}MB free at the mirror ($MIRROR_HOST)"
+      fi
+    elif [ ! -d "$BACKUPS_HOST" ]; then
+      : # covered above
     fi
   fi
 
-  # 9. Compose version, for whoever still uses compose directly
+  # 9. The management portal, if it is on.
+  #
+  # Reported because it is the one setting here that widens what the app can do to
+  # the host, so it should never be something an operator has to go looking for to
+  # discover. Silent when off, which is the default and the common case.
+  if [ "$(appenv SERVER_PORTAL_ENABLED || true)" = "true" ]; then
+    if [ -n "$APP" ] && docker exec "$APP" test -S /var/run/docker.sock 2>/dev/null; then
+      ok "management portal enabled (Settings -> Server in the browser)"
+      info "the app can drive Docker on this host, which is root-equivalent access"
+      info "turn it off with:  armoryhub portal off"
+    else
+      # Enabled but the socket is not there: the app will render the "turned off"
+      # page and the operator will not know why. Worth naming rather than leaving
+      # them to guess from a page that says to run the command they already ran.
+      bad "the portal is enabled but the Docker socket is not mounted"
+      info "the browser page will say it is turned off"
+      info "re-run:  armoryhub portal on"
+    fi
+  fi
+
+  # 10. Compose version, for whoever still uses compose directly
   CV=$(docker compose version --short 2>/dev/null | tr -d 'v' || echo "")
   if [ -n "$CV" ]; then
     MAJ=${CV%%.*}; REST=${CV#*.}; MIN=${REST%%.*}
@@ -332,10 +829,14 @@ doctor() {
     armoryhub backup list         what backups exist
     armoryhub backup now          take one immediately
     armoryhub backup verify latest
+    armoryhub backup path <dir>   move where backups are written
+    armoryhub backup mirror <dir> keep a second copy somewhere else
     armoryhub restore <stamp>     replace data with a backup (confirms first)
     armoryhub password            reset the account password
     armoryhub update [version]    move to the latest version and restart
-                                  (a version pins it, e.g. to roll back)
+                                  (a version pins it, e.g. to roll back;
+                                   nothing is restarted if already current)
+    armoryhub portal on|off       manage this server from the browser
 
 CMDS
   [ "$PROBLEMS" -gt 0 ] && exit 1
@@ -371,7 +872,93 @@ case "$CMD" in
       list)   backup_cmd list ;;
       now)    backup_cmd once ;;
       verify) backup_cmd verify "${1:-latest}" ;;
-      *)      die "usage: armoryhub backup list|now|verify [stamp]" ;;
+
+      # Where the primary copy goes. By default ./data/backups — the same disk as
+      # the database it is protecting, which is one disk failure from losing both.
+      path)
+        if [ $# -eq 0 ]; then
+          printf '\n  backup path: %s\n' "$BACKUPS_HOST"
+          if same_filesystem "$BACKUPS_HOST" "$DATA_HOST"; then
+            warn "same filesystem as your data — one disk failure loses both"
+            info "move it:  armoryhub backup path /mnt/somewhere-else/armoryhub-backups"
+          else
+            ok "on a different filesystem from your data"
+          fi
+          if [ -n "$MIRROR_HOST" ]; then
+            printf '  mirror:      %s\n' "$MIRROR_HOST"
+          else
+            printf '  mirror:      not configured\n'
+            info "a second copy:  armoryhub backup mirror /mnt/nas/armoryhub-backups"
+          fi
+          printf '\n'
+          exit 0
+        fi
+        NEWDIR="${1%/}"
+        [ -f "$DIR/.env" ] || die "no .env at $DIR — cannot save the setting"
+        printf '\n  Setting the backup path to %s\n\n' "$NEWDIR"
+        prepare_backup_dir "$NEWDIR"
+        ok "prepared $NEWDIR"
+        if same_filesystem "$NEWDIR" "$DATA_HOST"; then
+          warn "that is the same filesystem as your data"
+          info "it will work, but it does not protect you from that disk failing"
+        fi
+        copy_backups "$BACKUPS_HOST" "$NEWDIR"
+        set_env BACKUP_PATH "$NEWDIR"
+        # Turned on with the move, not before it. On the default ./data/backups a
+        # missing marker is normal — every install that predates this has none — but
+        # a relocated directory is exactly the kind that can silently disappear.
+        set_env BACKUP_REQUIRE_MARKER true
+        ok "saved to $DIR/.env"
+        apply_mounts
+        printf '\n  Check it:  armoryhub backup list\n\n' ;;
+
+      # The optional second copy. Worth having even with the primary relocated:
+      # one destination means an unavailable destination means no backup at all.
+      mirror)
+        if [ $# -eq 0 ]; then
+          if [ -n "$MIRROR_HOST" ]; then
+            printf '\n  mirror: %s\n\n' "$MIRROR_HOST"
+          else
+            printf '\n  no mirror configured\n'
+            printf '  set one:  armoryhub backup mirror /mnt/nas/armoryhub-backups\n\n'
+          fi
+          exit 0
+        fi
+        case "$1" in
+          now)
+            [ -n "$MIRROR_HOST" ] || die "no mirror is configured
+    set one:  armoryhub backup mirror /mnt/nas/armoryhub-backups"
+            shift
+            backup_cmd mirror "${1:-latest}" ;;
+          off)
+            [ -f "$DIR/.env" ] || die "no .env at $DIR — cannot save the setting"
+            set_env BACKUP_MIRROR_ENABLED false
+            ok "mirror disabled"
+            info "the files already in $MIRROR_HOST are left exactly as they are"
+            apply_mounts ;;
+          /*)
+            NEWDIR="${1%/}"
+            [ -f "$DIR/.env" ] || die "no .env at $DIR — cannot save the setting"
+            [ "$NEWDIR" != "$BACKUPS_HOST" ] || die "that is where the primary backups already go.
+    A mirror has to be somewhere else, or it is not a second copy."
+            printf '\n  Setting the backup mirror to %s\n\n' "$NEWDIR"
+            prepare_backup_dir "$NEWDIR"
+            ok "prepared $NEWDIR"
+            if same_filesystem "$NEWDIR" "$BACKUPS_HOST"; then
+              warn "that is the same filesystem as your primary backups"
+              info "a mirror on the same disk does not survive that disk failing"
+            fi
+            copy_backups "$BACKUPS_HOST" "$NEWDIR"
+            set_env BACKUP_MIRROR_PATH "$NEWDIR"
+            set_env BACKUP_MIRROR_ENABLED true
+            ok "saved to $DIR/.env"
+            apply_mounts
+            printf '\n  Copy tonight'"'"'s backup there now:  armoryhub backup mirror now\n\n' ;;
+          *)
+            die "usage: armoryhub backup mirror <absolute-path>|now|off" ;;
+        esac ;;
+
+      *)      die "usage: armoryhub backup list|now|verify [stamp]|path [dir]|mirror [dir|now|off]" ;;
     esac ;;
 
   restore)
@@ -388,25 +975,29 @@ case "$CMD" in
     [ -n "$APP" ] || die "app is not running"
     docker exec -it "$APP" node reset-password.js ;;
 
+  portal)
+    SUB="${1:-status}"; [ $# -gt 0 ] && shift
+    portal_cmd "$SUB" ;;
+
   update)
     [ -d "$DIR" ] || die "install not found at $DIR"
     cd "$DIR"
 
-    # Move the version pin before pulling, or this command cannot do what it says.
-    #
-    # docker-compose.yml pins the image tag, and that file is written once at install
-    # time and never touched again. `docker compose pull` against it therefore re-pulls
-    # the tag already pinned: an instance installed at 0.1.6 stays on 0.1.6 for ever,
-    # while the command reports success and the helper below even updates itself. The
-    # pin is deliberate — it is what makes an install reproducible — but nothing was
-    # ever moving it.
-    #
-    # ARMORYHUB_VERSION in .env is what shifts it. The compose file already reads
-    # ${ARMORYHUB_VERSION:-<pinned>}, .env belongs to the operator rather than being
-    # generated, and writing there leaves any local compose edits — or a dashboard's
-    # rewrite of that file — completely alone.
+    FORCE=""
+    TARGET=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        -f|--force) FORCE=yes; shift ;;
+        -*) die "unknown option '$1'
+    usage: armoryhub update [version] [--force]" ;;
+        *)
+          [ -z "$TARGET" ] || die "give at most one version
+    usage: armoryhub update [version] [--force]"
+          TARGET="$1"; shift ;;
+      esac
+    done
+
     CURRENT=$(running_version)
-    TARGET="${1:-}"
 
     if [ -z "$TARGET" ]; then
       # What new installs currently get. Authoritative, and one request.
@@ -417,18 +1008,58 @@ case "$CMD" in
       fi
     fi
 
-    if [ -n "$TARGET" ] && [ "$TARGET" != "$CURRENT" ]; then
-      umask 077
-      if grep -q '^ARMORYHUB_VERSION=' .env 2>/dev/null; then
-        sed "s|^ARMORYHUB_VERSION=.*|ARMORYHUB_VERSION=$TARGET|" .env > .env.new \
-          && mv .env.new .env
-      else
-        printf 'ARMORYHUB_VERSION=%s\n' "$TARGET" >> .env
+    # Already current: say so and stop. This is the common case and it should cost
+    # nothing.
+    #
+    # It used to pull, `down` and `up -d` regardless, so the routine "check for
+    # updates" tore down a healthy instance to arrive back at the version it started
+    # on — every container recreated, the app offline through the restart, and
+    # Tailscale re-registering. On a box where the pull is slow that is minutes of
+    # avoidable downtime, and it made people wary of running the command at all.
+    #
+    # Two things still happen, because neither touches the containers: the pin in .env
+    # is squared up with what is actually running, and this script updates itself. The
+    # helper versions independently of the image, so skipping that would mean a fix to
+    # this file could only ever reach an install that also had an image update waiting.
+    #
+    # Only skipped when the instance is whole. A stopped container is the other reason
+    # people run this, and `up -d` is the fix for it — so that case starts what is
+    # missing without pulling or cycling anything that is already up.
+    if [ -z "$FORCE" ] && [ -n "$TARGET" ] && [ "$TARGET" = "$CURRENT" ]; then
+      # Guarded on the file existing, unlike the version-move path below. An install
+      # whose variables come from somewhere else — a dashboard's own env fields, or
+      # values pasted straight into the compose file — has no .env, and a command that
+      # reports "nothing to do" must not leave a new file behind as a side effect.
+      if [ -f .env ]; then pin_version "$TARGET"; fi
+      MISSING=$(missing_services)
+
+      if [ -z "$MISSING" ]; then
+        printf '\n'
+        ok "already on $TARGET — the current release"
+        info "nothing pulled, nothing restarted"
+        info "re-pull and restart anyway with:  armoryhub update --force"
+        update_helper
+        printf '\n'
+        exit 0
       fi
-      chmod 600 .env
+
+      printf '\n'
+      ok "already on $TARGET — the current release"
+      warn "not running:$MISSING"
+      info "starting those; the version is unchanged so nothing is pulled"
+      printf '\n'
+      docker compose up -d
+      update_helper
+      printf '\n'
+      echo "  Run 'armoryhub doctor' to confirm."
+      exit 0
+    fi
+
+    if [ -n "$TARGET" ] && [ "$TARGET" != "$CURRENT" ]; then
+      pin_version "$TARGET"
       echo "  ${CURRENT:-unknown} -> $TARGET"
     elif [ -n "$TARGET" ]; then
-      echo "  already on $TARGET"
+      echo "  forcing a re-pull and restart of $TARGET"
     fi
 
     docker compose pull
@@ -442,37 +1073,14 @@ case "$CMD" in
       echo "  running $NOW"
     fi
 
-    # Update this script too. `docker compose pull` refreshes the image; this file
-    # lives on the host and nothing else would ever replace it, so without this the
-    # helper silently ages out while the app moves on.
-    #
-    # Written to a sibling then renamed, never copied over in place: rename swaps the
-    # directory entry and leaves the running script's inode alone, whereas cp truncates
-    # the file this shell is still reading from.
-    HELPER_URL="https://raw.githubusercontent.com/marcjwrigg/armoryhub-selfhost-install/main/armoryhub"
-    NEW="$0.new"
-    if curl -fsSL "$HELPER_URL" -o "$NEW" 2>/dev/null && sh -n "$NEW" 2>/dev/null; then
-      if cmp -s "$NEW" "$0"; then
-        rm -f "$NEW"
-      elif mv "$NEW" "$0" 2>/dev/null && chmod +x "$0" 2>/dev/null; then
-        echo "  armoryhub command updated"
-      elif sudo mv "$NEW" "$0" 2>/dev/null && sudo chmod +x "$0" 2>/dev/null; then
-        echo "  armoryhub command updated"
-      else
-        rm -f "$NEW"
-        echo "  a newer armoryhub command is available but could not be written to $0"
-        echo "  update it with:  sudo curl -fsSL $HELPER_URL -o $0 && sudo chmod +x $0"
-      fi
-    else
-      rm -f "$NEW"
-    fi
+    update_helper
 
     echo
     echo "  If tailscale did not come back, your compose file has been rewritten."
     echo "  Run 'armoryhub doctor' to confirm." ;;
 
   -h|--help|help)
-    sed -n '3,12p' "$0" | sed 's/^# \{0,1\}//' ;;
+    sed -n '3,17p' "$0" | sed 's/^# \{0,1\}//' ;;
 
   *) die "unknown command '$CMD' — try: armoryhub help" ;;
 esac

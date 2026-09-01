@@ -78,7 +78,7 @@ services:
     # Set ARMORYHUB_VERSION in your env file to pin a version, e.g. 0.1.1.
     # `latest` works, but then you cannot tell which version you are running or
     # go back to a previous one.
-    image: ghcr.io/marcjwrigg/armoryhub-selfhost:${ARMORYHUB_VERSION:-0.1.7}
+    image: ghcr.io/marcjwrigg/armoryhub-selfhost:${ARMORYHUB_VERSION:-0.1.8}
     restart: unless-stopped
     depends_on:
       db:
@@ -114,9 +114,25 @@ services:
       REALTIME_MODE: poll
       REALTIME_POLL_MS: "${REALTIME_POLL_MS:-30000}"
       LICENSE_FILE: /data/license.jwt
-      BACKUP_DIR: /data/backups
+
+      # Where the entrypoint writes its pre-flight dump before applying migrations.
+      #
+      # This used to be /data/backups — inside the app's own volume, a DIFFERENT
+      # directory from the one holding every other backup. `armoryhub backup list`
+      # never showed those dumps and retention never pruned them, so one accumulated
+      # per upgrade, for ever, in a directory nobody ever looked at.
+      #
+      # BACKUP_DIR_FALLBACK is where it writes instead if BACKUP_DIR is unavailable.
+      # It has to have one: BACKUP_PATH can now point at a second disk or a NAS, and
+      # a dump that cannot be written ABORTS the migration and therefore the boot.
+      # Without a fallback, an offline share would turn into "ArmoryHub will not
+      # start" — over a restore point that is only needed for the next ten seconds.
+      BACKUP_DIR: /backups
+      BACKUP_DIR_FALLBACK: /data/backups
+      BACKUP_REQUIRE_MARKER: ${BACKUP_REQUIRE_MARKER:-false}
     volumes:
       - "./data/app:/data"
+      - "${BACKUP_PATH:-./data/backups}:/backups"
     ports:
       # This port is reachable only from the server itself, not from the rest of
       # your network. That is intentional: anyone who joins your wifi would
@@ -176,11 +192,38 @@ services:
   # Backs up your database and files every night, automatically. Nothing to set up
   # and nothing to remember.
   #
-  # Backups are written to ./data/backups as ordinary files. Copy them somewhere
-  # else periodically — a backup on the same disk as the original does not survive
-  # that disk failing. The contents are already encrypted, so cloud storage is fine.
+  # Backups are ordinary files, so you can copy them with whatever you already use.
+  #
+  # WHERE they go is worth setting. By default they land in ./data/backups — the same
+  # disk as the database they are protecting, which is one disk failure from losing
+  # both. Two variables move them:
+  #
+  #   BACKUP_PATH          the primary destination. Point it at a second disk, a NAS
+  #                        or a USB stick.
+  #   BACKUP_MIRROR_PATH   an optional SECOND copy, written after the primary has
+  #                        been taken and verified.
+  #
+  # Set both if you can. Relocating the only copy trades "one disk failure loses
+  # everything" for "the share was unmounted at 03:00, so there is no backup at all
+  # tonight"; a mirror degrades instead of failing.
+  #
+  # Set them with the helper rather than by hand — it creates the directory, fixes
+  # ownership, writes the marker file the sidecar checks for, and copies your
+  # existing backups across:
+  #
+  #   armoryhub backup path   /mnt/disk2/armoryhub-backups
+  #   armoryhub backup mirror /mnt/nas/armoryhub-backups
+  #
+  # About that marker: a bind mount whose source has gone does not error. Docker
+  # creates an empty directory at that path on the ROOT disk and mounts that
+  # instead, so backups keep "succeeding" onto the very disk you moved them off.
+  # The marker file lives on the destination's own filesystem, so it vanishes with
+  # it, and the sidecar refuses to write when it is missing.
+  #
+  # The contents are already encrypted, so a cloud bucket or somebody else's NAS is
+  # a perfectly reasonable destination.
   backup:
-    image: ghcr.io/marcjwrigg/armoryhub-selfhost:${ARMORYHUB_VERSION:-0.1.7}
+    image: ghcr.io/marcjwrigg/armoryhub-selfhost:${ARMORYHUB_VERSION:-0.1.8}
     restart: unless-stopped
     depends_on:
       db:
@@ -189,13 +232,31 @@ services:
       DATABASE_ADMIN_URL: postgres://armoryhub_migrator:${MIGRATOR_DB_PASSWORD}@db:5432/armoryhub
       BACKUP_DIR: /backups
       FILES_DIR: /data/files
+      BACKUP_MIRROR_DIR: /mirror
+      # The mirror is off unless asked for. Set by `armoryhub backup mirror <dir>`.
+      BACKUP_MIRROR_ENABLED: ${BACKUP_MIRROR_ENABLED:-false}
       BACKUP_HOUR: ${BACKUP_HOUR:-3}
       BACKUP_KEEP_DAILY: ${BACKUP_KEEP_DAILY:-7}
       BACKUP_KEEP_WEEKLY: ${BACKUP_KEEP_WEEKLY:-4}
+      # Pre-migration and pre-restore dumps. Kept separately from the daily/weekly
+      # policy because they are not scheduled — one exists for every upgrade and
+      # every restore — and until now nothing pruned them at all.
+      BACKUP_KEEP_SAFETY: ${BACKUP_KEEP_SAFETY:-3}
+      # Refuse to write if the marker file is missing. Set by `armoryhub backup path`
+      # when the primary moves somewhere that can disappear on its own. Off by
+      # default, because ./data/backups cannot vanish independently of the data it
+      # is backing up, and every install that predates this has no marker.
+      BACKUP_REQUIRE_MARKER: ${BACKUP_REQUIRE_MARKER:-false}
     volumes:
       # Read-only, so the nightly backup cannot alter your live data.
       - "./data/app:/data:ro"
-      - "./data/backups:/backups"
+      - "${BACKUP_PATH:-./data/backups}:/backups"
+      # A volume entry cannot be conditional, so /mirror always exists. Whether it
+      # MEANS anything is BACKUP_MIRROR_ENABLED, an explicit flag rather than a
+      # nested ${A:-${B:-c}} default — that form would have to be interpolated
+      # correctly by every Compose version an existing install might be running, and
+      # this is the file where a wrong guess breaks everyone's upgrade at once.
+      - "${BACKUP_MIRROR_PATH:-./data/backups}:/mirror"
     entrypoint: ["/bin/sh", "/app/backup.sh", "loop"]
 
   # Backup tools. These only run when you ask for them:
@@ -214,17 +275,24 @@ services:
   #   docker compose start app
   restore:
     profiles: ["tools"]
-    image: ghcr.io/marcjwrigg/armoryhub-selfhost:${ARMORYHUB_VERSION:-0.1.7}
+    image: ghcr.io/marcjwrigg/armoryhub-selfhost:${ARMORYHUB_VERSION:-0.1.8}
     depends_on:
       db:
         condition: service_healthy
     environment:
       DATABASE_ADMIN_URL: postgres://armoryhub_migrator:${MIGRATOR_DB_PASSWORD}@db:5432/armoryhub
       BACKUP_DIR: /backups
+      BACKUP_MIRROR_DIR: /mirror
+      BACKUP_MIRROR_ENABLED: ${BACKUP_MIRROR_ENABLED:-false}
       FILES_DIR: /data/files
+      BACKUP_KEEP_SAFETY: ${BACKUP_KEEP_SAFETY:-3}
     volumes:
       - "./data/app:/data"
-      - "./data/backups:/backups"
+      - "${BACKUP_PATH:-./data/backups}:/backups"
+      # Mounted here too, so a restore still works when the primary is the disk that
+      # died — which is the only scenario a mirror exists for. verify and restore
+      # fall back to it automatically when a stamp is not in the primary.
+      - "${BACKUP_MIRROR_PATH:-./data/backups}:/mirror"
     entrypoint: ["/bin/sh", "/app/backup.sh"]
 
   # Automatic HTTPS on a domain you own. Only starts if you ask for it:

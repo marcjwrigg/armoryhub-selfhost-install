@@ -230,6 +230,23 @@ REALTIME_POLL_MS=30000
 BACKUP_HOUR=3
 BACKUP_KEEP_DAILY=7
 BACKUP_KEEP_WEEKLY=4
+BACKUP_KEEP_SAFETY=3
+
+# Where backups go. Empty means ./data/backups — the same disk as your database,
+# which is one disk failure from losing both. Set these with the helper rather than
+# by hand; it creates the directory, fixes ownership, writes the marker file the
+# backup sidecar checks for, and copies your existing backups across:
+#
+#   armoryhub backup path   /mnt/disk2/armoryhub-backups
+#   armoryhub backup mirror /mnt/nas/armoryhub-backups
+#
+# BACKUP_PATH moves the primary copy. BACKUP_MIRROR_PATH adds a second one, written
+# only after the primary is taken and verified. Set both if you can: one destination
+# means an unavailable destination means no backup that night.
+# BACKUP_PATH=
+# BACKUP_MIRROR_PATH=
+BACKUP_MIRROR_ENABLED=false
+BACKUP_REQUIRE_MARKER=false
 
 # Keeps the Tailscale sidecar in every future 'docker compose up -d'.
 #
@@ -271,9 +288,16 @@ mkdir -p data/postgres data/app/files data/backups data/tailscale
 # which is what lets you copy your backups out without sudo.
 #
 # Done through a temporary container, so this needs no root access on your machine.
+#
+# The marker file is written here too. It is what `BACKUP_REQUIRE_MARKER` checks
+# for, and while that is off for this default directory — ./data/backups cannot
+# disappear independently of the data it backs up — writing it now means the flag
+# can be turned on later without a separate step, and it identifies the directory
+# for anyone who finds it detached from its install.
 HOST_GID="$(id -g)"
 if ! docker run --rm -v "$DIR/data:/d" alpine:latest \
-      sh -c "chown -R 1001:${HOST_GID} /d/app /d/backups && chmod -R 750 /d/app /d/backups" >/dev/null 2>&1; then
+      sh -c "printf '%s\n' 'ArmoryHub backup destination.' > /d/backups/.armoryhub-backups; \
+             chown -R 1001:${HOST_GID} /d/app /d/backups && chmod -R 750 /d/app /d/backups" >/dev/null 2>&1; then
   warn 'Could not set ownership on ./data/app and ./data/backups.'
   warn 'If the app or backups fail with permission errors, run:'
   warn "  docker run --rm -v $DIR/data:/d alpine sh -c 'chown -R 1001:${HOST_GID} /d/app /d/backups && chmod -R 750 /d/app /d/backups'"
@@ -700,6 +724,21 @@ say "    $AH logs            # what the app is doing"
 say "    $AH url             # the address to open"
 say "    $AH backup list     # your backups"
 say "    $AH password        # reset your account password"
+say ''
+# Said here rather than buried in a config file, because it is the one piece of
+# setup this installer genuinely cannot do for you: it has no idea what other
+# storage this machine has. Backups default to the same disk as the database, and
+# an operator who never reads further has no reason to know that.
+say '  One thing worth doing now:'
+say ''
+say '  Your backups start out on the same disk as your data, so a single disk'
+say '  failure would take the records and every backup of them together. If this'
+say '  machine has another disk, a NAS or even a USB stick, point them at it:'
+say ''
+say "    $AH backup path   /mnt/somewhere-else/armoryhub-backups"
+say "    $AH backup mirror /mnt/nas/armoryhub-backups   # optional second copy"
+say ''
+say '  Both are safe to run later, and they copy what you already have across.'
 say ''
 if [ ! -x /usr/local/bin/armoryhub ] && [ -f "$DIR/armoryhub" ]; then
   say '  To run it as just `armoryhub` from anywhere:'

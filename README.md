@@ -19,6 +19,7 @@ rather than a claim.
 - [The armoryhub command](#the-armoryhub-command)
 - [Updating](#updating)
 - [Backups](#backups)
+- [Managing the server from a browser](#managing-the-server-from-a-browser)
 - [Troubleshooting](#troubleshooting)
 - [Your password, PIN and passphrase](#your-password-pin-and-passphrase)
 - [Installing it as an app on your phone and computer](#installing-it-as-an-app-on-your-phone-and-computer)
@@ -512,12 +513,15 @@ armoryhub doctor            # check everything and say what is wrong
 armoryhub status            # what is running
 armoryhub logs [service]    # follow logs, default: app
 armoryhub url               # the address to open
-armoryhub backup list       # what backups exist
+armoryhub backup list       # what backups exist, and where they go
 armoryhub backup now        # take one immediately
 armoryhub backup verify latest
+armoryhub backup path   /mnt/disk2/armoryhub-backups   # move where backups go
+armoryhub backup mirror /mnt/nas/armoryhub-backups     # keep a second copy
 armoryhub restore <stamp>   # asks for confirmation, stops and restarts the app
 armoryhub password          # reset the account password
-armoryhub update            # pull and restart
+armoryhub update            # pull and restart, or say you are already current
+armoryhub portal on|off     # manage this server from the browser
 ```
 
 **`armoryhub doctor` is the one to run when something is wrong.** It checks the
@@ -595,8 +599,24 @@ That checks what the current release is, moves your install to it, restarts ever
 and updates the `armoryhub` command itself. A backup is taken before any database
 changes are applied, and the upgrade aborts if that backup fails.
 
-It prints what it did — `0.1.6 -> 0.1.7`, or `already on 0.1.7` — so you can tell the
-difference between an upgrade and a no-op. Confirm with `armoryhub doctor`.
+**If you are already on the current release it says so and stops.** Nothing is pulled
+and nothing is restarted — an up-to-date instance should not be torn down just to find
+that out. It still squares up the version pin in `.env` and updates the `armoryhub`
+command, because neither touches your containers and the helper versions separately
+from the image.
+
+```bash
+armoryhub update            # to the current release, or a no-op if already there
+armoryhub update --force    # re-pull and restart even if already current
+```
+
+The one exception is a container that is not running. If the version is current but
+something is stopped, it starts what is missing without pulling or recreating anything
+that is already up.
+
+It prints what it did — `0.1.6 -> 0.1.7`, or `already on 0.1.7 — the current release`
+— so you can tell the difference between an upgrade and a no-op. Confirm with
+`armoryhub doctor`.
 
 **How the version is pinned**, because it explains what you will see in `.env`. Your
 `docker-compose.yml` pins an image tag, fixed at the moment you installed, so that an
@@ -637,10 +657,90 @@ To restore — this replaces your current data, and asks you to confirm first:
 armoryhub restore <stamp>
 ```
 
-**Test a restore before you rely on one.** Backups are written to `./data/backups` as
-ordinary files, so copy them off this machine periodically — a backup on the same disk
-does not survive that disk failing. Their contents are already encrypted, so cloud
-storage is low-risk.
+**Test a restore before you rely on one.**
+
+### Where your backups go
+
+By default: `./data/backups`, inside your install directory. That is the same disk as
+the database it is protecting, so a single disk failure loses your records **and** every
+backup of them.
+
+Two settings move them, and it is worth setting both:
+
+```bash
+armoryhub backup path   /mnt/disk2/armoryhub-backups   # the primary copy
+armoryhub backup mirror /mnt/nas/armoryhub-backups     # an optional second copy
+```
+
+Relocating the only copy trades one problem for another: if the share is unmounted at
+03:00 there is no backup at all that night. A mirror degrades instead of failing — the
+primary still lands, and the second copy is reported as failing rather than silently
+skipped.
+
+Use these commands rather than editing `.env` by hand. They create the directory, give
+it to the right user, copy your existing backups across, and write a marker file:
+
+```
+/mnt/disk2/armoryhub-backups/.armoryhub-backups
+```
+
+**Do not delete that marker.** It guards a failure that otherwise has no symptoms. A
+bind mount whose source has gone does not error — Docker creates an empty directory at
+that path on the root disk and mounts that instead. Backups then keep succeeding, onto
+the very disk you moved them off, and every check passes. The marker lives on the real
+destination's filesystem, so it disappears exactly when the destination does, and the
+backup sidecar refuses to write without it.
+
+Backups contain only encrypted data, so a NAS, a cloud mount or somebody else's server
+is a fine destination. They cannot be read without your PIN — including by us.
+
+```bash
+armoryhub backup list          # both paths, and whether the mirror is working
+armoryhub backup mirror now    # copy the latest one across, after fixing a mount
+armoryhub backup mirror off    # stop mirroring; existing files are left alone
+```
+
+## Managing the server from a browser
+
+`armoryhub portal on` adds a **Settings → Server** page to your instance with the
+health checks, backups, updates, logs and a configuration editor.
+
+**Read this before turning it on.** It works by mounting the Docker socket into the
+ArmoryHub app container, and the Docker socket is root on the host: anything able to
+drive it can create a container with `/` mounted and run any command as root. The app
+is also the part that faces your network and holds your database credentials.
+
+So it is off by default, and off means the socket mount is not in your compose file at
+all rather than merely unused. The command explains the trade and asks you to type
+`yes`.
+
+```bash
+armoryhub portal on       # adds docker-compose.portal.yml and recreates the app
+armoryhub portal status   # is it on, and is the socket actually reachable
+armoryhub portal off      # removes the override and the access with it
+```
+
+Everything the page does also works from this command line, so leaving it off costs you
+convenience rather than capability. Two things stay CLI-only on purpose:
+
+- **`armoryhub doctor`** keeps checks the browser cannot do — the HTTPS certificate
+  diagnosis needs a shell on the host — and you need it most when the app is not
+  serving, which is exactly when the page will not load.
+- **`armoryhub password`** is how you get back into a locked-out account. It has to
+  work when you cannot sign in, and exposing it to a signed-in session would turn a
+  stolen session into permanent account takeover.
+
+Configuration changes made in the browser are written to your `.env`, and a
+timestamped copy of the previous version is kept first — the last 20 of them, under
+`data/app/env-backups/` in your install directory. A change that only shows itself on
+the next restart is still recoverable.
+
+```bash
+cd ~/armoryhub
+ls data/app/env-backups                    # newest last
+cp data/app/env-backups/env-<stamp> .env
+docker compose up -d
+```
 
 ## Troubleshooting
 
@@ -882,4 +982,4 @@ the machine first.
 
 ---
 
-Version: `0.1.7`
+Version: `0.1.8`
