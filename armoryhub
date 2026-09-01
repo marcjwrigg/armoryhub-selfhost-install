@@ -349,12 +349,14 @@ ts_domain() {
 
 # The address to actually open in a browser.
 #
-# Tailscale first, APP_URL second. APP_URL is what the app uses to build links, and it
-# is NOT reliably the address you reach the instance on: install.sh writes
-# http://localhost:8477 as a placeholder and only the operator ever updates it, so an
-# install can serve happily on https://<name>.ts.net while APP_URL still says
-# localhost. Printing that told people to open an address that works from nowhere
-# except the server itself.
+# Tailscale first, APP_URL second. APP_URL is NOT reliably the address you reach the
+# instance on: install.sh writes http://localhost:8477 as a placeholder and only the
+# operator ever changes it, so an install can serve happily on https://<name>.ts.net
+# while APP_URL still says localhost. Printing that told people to open an address
+# that works from nowhere except the server itself.
+#
+# Nothing in the app reads APP_URL, so a stale value is a display problem only — but
+# this is exactly the display it was getting wrong.
 #
 # Shared by `url`, `portal status` and `portal on` so all three agree.
 instance_url() {
@@ -887,7 +889,54 @@ doctor() {
     fi
   fi
 
-  # 3. Compose file integrity. A rewritten file still leaves containers running, so
+  # 3. Are the containers attached to the REAL data directories?
+  #
+  # This check exists because of a specific fault, and it is the most valuable one
+  # here: it turns "all my data is gone" into a one-command recovery.
+  #
+  # The management portal's jobs run `docker compose up -d` inside a container. Until
+  # 0.1.14 that container had the install directory mounted at /install, and Compose
+  # resolves relative volume paths against its own working directory before handing
+  # the result to the Docker daemon as a HOST path — so it asked for
+  # /install/data/postgres. The daemon does not fail on a path that is missing; it
+  # creates it. Every service came back attached to a brand new empty directory.
+  #
+  # The instance then looks destroyed: Postgres initialises an empty cluster, the app
+  # replays every migration into it, Tailscale finds no state and logs itself out, so
+  # nothing resolves. The real data is untouched the entire time, orphaned in the
+  # actual install directory.
+  #
+  # Fixed in 0.1.14, but an install that hit it stays wrong until the containers are
+  # recreated from the right place, and nothing else would tell the operator that.
+  MISPLACED=""
+  for pair in "db:/var/lib/postgresql/data:postgres" "app:/data:app" "tailscale:/var/lib/tailscale:tailscale"; do
+    _svc=${pair%%:*}; _rest=${pair#*:}; _dest=${_rest%%:*}; _sub=${_rest##*:}
+    _c=$(container "$_svc" || true)
+    [ -n "$_c" ] || continue
+    _src=$(mount_source "$_c" "$_dest" || true)
+    [ -n "$_src" ] || continue
+    if [ "$_src" != "$DIR/data/$_sub" ]; then
+      MISPLACED="$MISPLACED $_svc"
+      info "$_svc has $_dest <- $_src"
+    fi
+  done
+  if [ -n "$MISPLACED" ]; then
+    bad "containers are attached to the WRONG directories:$MISPLACED"
+    info "expected them under $DIR/data"
+    info ""
+    info "YOUR DATA IS NOT LOST. It is still in $DIR/data — the containers are"
+    info "simply pointing somewhere else, so the app is running against empty"
+    info "directories. Recreate them from the install directory:"
+    info ""
+    info "  cd $DIR && docker compose down && docker compose up -d"
+    info ""
+    info "Then confirm with this command again, and delete the stray tree it made"
+    info "(the paths listed above) once you are satisfied."
+  else
+    ok "containers attached to $DIR/data"
+  fi
+
+  # 4. Compose file integrity. A rewritten file still leaves containers running, so
   #    this is invisible until you next try to use a profile service.
   if [ -f "$DIR/docker-compose.yml" ]; then
     if grep -q '^  tailscale:' "$DIR/docker-compose.yml" 2>/dev/null; then
@@ -911,7 +960,7 @@ doctor() {
     warn "no docker-compose.yml at $DIR"
   fi
 
-  # 4. App reachable on loopback
+  # 5. App reachable on loopback
   PORT=$(appenv APP_PORT || echo "")
   [ -n "$PORT" ] || PORT=8477
   HOSTPORT=$(docker port "$APP" 3000 2>/dev/null | head -1 | sed 's/.*://' || true)
@@ -927,7 +976,7 @@ doctor() {
     info "see why:  armoryhub logs"
   fi
 
-  # 5. HTTPS. This is the one that presents as a blank page with an empty console.
+  # 6. HTTPS. This is the one that presents as a blank page with an empty console.
   #
   # Deliberately does NOT trust a single probe. The obvious check — wget from inside
   # the tailscale container to its own public name — fails in setups where HTTPS is
@@ -945,16 +994,18 @@ doctor() {
     else
       ok "tailscale address: https://$NAME"
 
-      # APP_URL is what the app builds links from, and nothing updates it for you
-      # after Tailscale registers. An install can serve perfectly on the address
-      # above while every link it generates points at localhost.
-      CONFIGURED_URL=$(appenv APP_URL || true)
-      if [ -n "$CONFIGURED_URL" ] && [ "$CONFIGURED_URL" != "https://$NAME" ]; then
-        warn "APP_URL is $CONFIGURED_URL, not https://$NAME"
-        info "links the app generates will point at that address instead"
-        info "fix it in the browser (Settings -> Server -> Config), or:"
-        info "  cd $DIR && sed -i \"s|^APP_URL=.*|APP_URL=https://$NAME|\" .env && docker compose up -d"
-      fi
+      # Deliberately NOT warning that APP_URL disagrees with this address.
+      #
+      # A previous version did, on the assumption that the app builds its links from
+      # APP_URL. It does not: nothing in the self-hosted build reads it. The only
+      # consumers of NEXT_PUBLIC_APP_URL are the Stripe routes, which are hosted-only
+      # and 404 here, and that variable is baked in at image build time anyway, so a
+      # runtime value could not reach the client even if something wanted it.
+      #
+      # In self-hosted, APP_URL is documentation: install.sh prints it and `armoryhub
+      # url` falls back to it when there is no Tailscale name. So a mismatch has no
+      # effect, and a check that fires on every healthy Tailscale install while
+      # recommending an edit that changes nothing is worse than no check at all.
 
       PROBE_ERR=$(docker exec "$TS" wget -q -T 12 -O /dev/null \
         "https://$NAME/api/selfhost/auth/status" 2>&1) && PROBE=ok || PROBE=fail
@@ -1018,7 +1069,7 @@ doctor() {
     fi
   fi
 
-  # 6. Storage. Postgres on FUSE or a network share corrupts slowly and blames itself.
+  # 7. Storage. Postgres on FUSE or a network share corrupts slowly and blames itself.
   if [ -d "$DIR/data/postgres" ]; then
     FS=$(stat -f -c %T "$DIR/data/postgres" 2>/dev/null || echo unknown)
     case "$FS" in
@@ -1031,13 +1082,13 @@ doctor() {
     esac
   fi
 
-  # 7. Free space
+  # 8. Free space
   AVAIL=$(df -Pk "$DIR" 2>/dev/null | awk 'NR==2{print int($4/1024)}' || echo 0)
   if [ "$AVAIL" -lt 1024 ]; then bad "only ${AVAIL}MB free at $DIR"
   elif [ "$AVAIL" -lt 5120 ]; then warn "${AVAIL}MB free at $DIR"
   else ok "$((AVAIL/1024))GB free"; fi
 
-  # 8. Backups: existence is not the point. Recency is, and so is WHERE.
+  # 9. Backups: existence is not the point. Recency is, and so is WHERE.
   #
   # The old version of this check looked in a hardcoded $DIR/data/backups and closed
   # by telling the operator these live on the same disk as their data. Both are now
@@ -1114,7 +1165,7 @@ doctor() {
     fi
   fi
 
-  # 9. Is docker-compose.yml current?
+  # 10. Is docker-compose.yml current?
   #
   # Reported because a stale one fails silently rather than loudly. `update` moves the
   # image and the compose file is written once at install time, so an install can run
@@ -1133,7 +1184,7 @@ doctor() {
     rm -f "$PUBC" "$PUBC.local" "$PUBC.pub"
   fi
 
-  # 10. The management portal, if it is on.
+  # 11. The management portal, if it is on.
   #
   # Reported because it is the one setting here that widens what the app can do to
   # the host, so it should never be something an operator has to go looking for to
@@ -1153,7 +1204,7 @@ doctor() {
     fi
   fi
 
-  # 11. Compose version, for whoever still uses compose directly
+  # 12. Compose version, for whoever still uses compose directly
   CV=$(docker compose version --short 2>/dev/null | tr -d 'v' || echo "")
   if [ -n "$CV" ]; then
     MAJ=${CV%%.*}; REST=${CV#*.}; MIN=${REST%%.*}

@@ -809,18 +809,29 @@ backup service directly rather than reading the directory itself.
 not reference `BACKUP_PATH`, so nothing consumed it. `armoryhub compose refresh`,
 then set it again and confirm with `armoryhub backup list`.
 
-**Links in the app point at localhost.** `APP_URL` is what the app builds links from,
-and nothing updates it for you once Tailscale registers — `install.sh` writes
-`http://localhost:8477` as a placeholder. Your instance serves fine on its real
-address either way, but set it to match: Settings → Server → Config in the browser, or
+**Everything looks empty, or you are asked to create an account again.** Almost
+certainly the containers are attached to the wrong directories rather than anything
+being lost. Versions 0.1.8 to 0.1.13 had a fault in the management portal: saving
+configuration, updating or changing a backup path from the browser could recreate the
+stack against freshly-created empty directories, leaving your real data orphaned in
+place. Postgres then starts an empty database and Tailscale logs itself out, which
+together look like total loss.
+
+`armoryhub doctor` detects it and names the stray paths. The fix does not touch your
+data:
 
 ```bash
-cd ~/armoryhub
-sed -i "s|^APP_URL=.*|APP_URL=|" .env
-docker compose up -d
+cd ~/armoryhub && docker compose down && docker compose up -d
 ```
 
-`armoryhub doctor` reports it when the two disagree.
+Then run `armoryhub doctor` again to confirm, and delete the stray directories it
+listed. Fixed in 0.1.14; the CLI was never affected, only the browser portal.
+
+**`APP_URL` still says localhost.** Harmless. Nothing in a self-hosted build reads
+it — it is there for `install.sh` and `armoryhub url` to print, and for a dashboard
+tile to link to. Use `armoryhub url` to get the address you actually open, which
+prefers your Tailscale name. Set `APP_URL` to match if you like tidy config, from
+Settings → Server → Config or by editing `.env`, but nothing depends on it.
 
 **The page is blank, or the certificate looks wrong.** Ask Tailscale directly — it
 prints the real error where the browser shows you nothing:
@@ -1057,4 +1068,4 @@ the machine first.
 
 ---
 
-Version: `0.1.13`
+Version: `0.1.15`
