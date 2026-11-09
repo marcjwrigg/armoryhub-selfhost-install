@@ -1088,4 +1088,4 @@ the machine first.
 
 ---
 
-Version: `0.1.25`
+Version: `0.1.26`
