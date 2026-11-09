@@ -733,8 +733,28 @@ backup sidecar refuses to write without it.
 Backups contain only encrypted data, so a NAS, a cloud mount or somebody else's server
 is a fine destination. They cannot be read without your PIN — including by us.
 
+**If the destination is a network share, mount it for the container user.** The backup
+job runs as uid 1001 inside its container. A share mounted with default options appears
+owned by root, and on SMB a `chown` afterwards returns success but changes nothing, so
+the helper runs clean and then every backup fails with "permission denied". Set the
+ownership in the mount options instead. For a CIFS/SMB share, in `/etc/fstab`:
+
+```
+//NAS_IP/share  /mnt/nas  cifs  credentials=/root/.smbcredentials,uid=1001,gid=1000,forceuid,forcegid,file_mode=0660,dir_mode=0770,_netdev,nofail,x-systemd.automount  0  0
+```
+
+`uid=1001` is the container user. `gid=1000` is your own account's group (check with
+`id -g`), so you can still read the backups yourself. `x-systemd.automount` matters at
+boot: without it Docker can start before the share is up and bind-mount an empty
+directory on the local disk instead. The marker catches that, but the mirror stays
+broken until the backup container is restarted. Mount the share, then run
+`armoryhub backup mirror /mnt/nas/armoryhub-backups` as normal.
+
+The database itself must stay on local storage — see the note under install-time options.
+
 ```bash
-armoryhub backup list          # both paths, and whether the mirror is working
+armoryhub backup list          # both paths
+armoryhub doctor               # whether the mirror is working
 armoryhub backup mirror now    # copy the latest one across, after fixing a mount
 armoryhub backup mirror off    # stop mirroring; existing files are left alone
 ```
@@ -1068,4 +1088,4 @@ the machine first.
 
 ---
 
-Version: `0.1.23`
+Version: `0.1.25`
